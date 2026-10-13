@@ -28,6 +28,21 @@ export function parseProvider(value: string, where = "DPI_PROVIDER"): ProviderId
   return value;
 }
 
+/**
+ * Which providers a device registers, in order. `defaultProvider` comes first and Faux is always
+ * registered: without it, a stored Faux session would be silently re-pointed at a paid provider
+ * when the device's default changes. Unknown names are refused wherever they appear.
+ */
+export function parseProviders(value: string | undefined, defaultProvider: ProviderId, where = "DPI_PROVIDERS"): ProviderId[] {
+  const named = (value ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => parseProvider(part, where));
+  const ordered = [defaultProvider, ...named, "faux" as ProviderId];
+  return [...new Set(ordered)];
+}
+
 /** Ollama Cloud serves an OpenAI-compatible subset; cloud models need no local download. */
 export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com/v1";
 /** The cloud catalog endpoint does not report a context window; this is a floor, not a measurement. */
@@ -84,6 +99,13 @@ export function ollamaProvider(baseUrl: string = ollamaBaseUrl()) {
   });
 }
 
+/** Register every provider a device offers, in order. Unknown ids are refused, never defaulted. */
+export function registerProviders(models: MutableModels, providerIds: readonly ProviderId[], options: { ollamaBaseUrl?: string } = {}): void {
+  // Faux is always registered even when a remote provider is enabled. Existing sessions keep their
+  // stored provider/model and a new remote provider must never silently replace a Faux session.
+  for (const id of new Set<ProviderId>(["faux", ...providerIds])) registerProvider(models, id, options);
+}
+
 /** Register one provider on a model collection. Unknown ids are refused, never defaulted. */
 export function registerProvider(models: MutableModels, providerId: ProviderId, options: { ollamaBaseUrl?: string } = {}): void {
   switch (providerId) {
@@ -138,6 +160,8 @@ export function modelInfos(providerId: ProviderId, available: readonly LiveModel
 /** The model a new session gets when the caller names none. */
 export function defaultModelFor(providerId: ProviderId, available: readonly { id: string }[]): string {
   if (providerId === "faux") return fauxModels[0].id;
-  if (providerId === "openrouter") return defaultModelId;
-  return available[0]?.id ?? "";
+  const preferred = providerId === "openrouter" ? defaultModelId : providerId === "radius" ? "balanced" : available[0]?.id;
+  // If the external provider has no auth/model yet, default to the free Faux model, never a
+  // guessed or paid model. The user must explicitly choose a remote model from the catalog.
+  return preferred && available.some((model) => model.id === preferred) ? preferred : fauxModels[0].id;
 }

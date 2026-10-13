@@ -40,7 +40,7 @@ import { BACKGROUND_CONTEXT as ctx, withAbortSignal } from "@earendil-works/chor
 import { createModels } from "@earendil-works/pi-ai/models";
 import { curatedModels, defaultModelId } from "./model-catalog.js";
 import { fauxModels } from "./faux.js";
-import { defaultModelFor, modelInfos, registerProvider, type ProviderId } from "./providers.js";
+import { defaultModelFor, modelInfos, registerProviders, type ProviderId } from "./providers.js";
 import {
   Harness,
   createRegistry,
@@ -90,7 +90,10 @@ export interface StoreOptions {
   dataDir: string;
   startDirs: string[];
   name: string;
+  /** The provider a new session gets when the caller names none. */
   provider: ProviderId;
+  /** Every provider this device registers. Defaults to `[provider, "faux"]`. */
+  providers?: ProviderId[];
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -176,8 +179,13 @@ export class Store {
     return this.options.startDirs;
   }
 
+  readonly providers: ProviderId[];
+
   private constructor(readonly options: StoreOptions) {
-    registerProvider(this.models, options.provider);
+    // Faux is always registered: without it a stored Faux session would be silently re-pointed at
+    // a paid provider the moment this device's default provider changed.
+    this.providers = options.providers ?? [options.provider, "faux"];
+    registerProviders(this.models, this.providers);
     mkdirSync(options.dataDir, { recursive: true, mode: 0o700 });
     this.unlockCatalog = lockFile(`${this.catalogPath}.lock`);
     this.catalog = new DatabaseSync(this.catalogPath);
@@ -254,12 +262,15 @@ export class Store {
   }
 
   private defaultModel() {
-    return defaultModelFor(this.options.provider, this.modelList);
+    return defaultModelFor(
+      this.options.provider,
+      this.modelList.filter((m) => m.provider === this.options.provider),
+    );
   }
 
-  /** Faux rows are static; every other provider reads its own catalog and is never substituted for another. */
+  /** Every registered provider contributes its own catalog; no provider borrows another's list. */
   private async loadModels(): Promise<ModelInfo[]> {
-    const provider = this.options.provider;
+    const rows: ModelInfo[] = [];
     const asRow = (m: { id: string; name?: string; contextWindow: number; reasoning: boolean; cost: { input: number; output: number } }) => ({
       id: m.id,
       name: m.name,
@@ -267,58 +278,70 @@ export class Store {
       reasoning: m.reasoning,
       cost: { input: m.cost.input, output: m.cost.output },
     });
-    if (provider === "faux")
-      return modelInfos(
-        "faux",
-        fauxModels.map((m) => ({ id: m.id, name: m.name, contextWindow: 128000, reasoning: false, cost: { input: 0, output: 0 } })),
-      );
-    if (provider === "openrouter") {
-      const available = await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) });
-      return modelInfos(
-        "openrouter",
-        curatedModels.flatMap((c) => {
-          const m = available.find((x) => x.id === c.id);
-          return m ? [asRow(m)] : [];
-        }),
-      );
+    for (const provider of this.providers) {
+      if (provider === "faux") {
+        rows.push(
+          ...modelInfos(
+            "faux",
+            fauxModels.map((m) => ({ id: m.id, name: m.name, contextWindow: 128000, reasoning: false, cost: { input: 0, output: 0 } })),
+          ),
+        );
+        continue;
+      }
+      if (provider === "openrouter") {
+        const available = await this.models.getAvailable("openrouter", { signal: AbortSignal.timeout(10000) });
+        rows.push(
+          ...modelInfos(
+            "openrouter",
+            curatedModels.flatMap((c) => {
+              const m = available.find((x) => x.id === c.id);
+              return m ? [asRow({ ...asRow(m), name: c.name })] : [];
+            }),
+          ),
+        );
+        continue;
+      }
+      // Radius and Ollama publish dynamic catalogs, so refresh before reading. With no credential the
+      // catalog stays empty and the device offers no model of that provider.
+      if (await this.models.checkAuth(provider, { signal: AbortSignal.timeout(10000) }))
+        await this.models.refresh({ providers: [provider], signal: AbortSignal.timeout(20000) });
+      const available = await this.models.getAvailable(provider, { signal: AbortSignal.timeout(10000) });
+      rows.push(...modelInfos(provider, available.map(asRow)));
     }
-    // Radius and Ollama publish dynamic catalogs, so refresh before reading. With no credential the
-    // catalog stays empty and the device offers no model; it does not borrow another provider's list.
-    if (await this.models.checkAuth(provider, { signal: AbortSignal.timeout(10000) }))
-      await this.models.refresh({ providers: [provider], signal: AbortSignal.timeout(20000) });
-    const available = await this.models.getAvailable(provider, { signal: AbortSignal.timeout(10000) });
-    return modelInfos(provider, available.map(asRow));
+    return rows;
   }
 
   routedModel(model?: ModelRef): ModelRef {
+    // A stored choice on a registered provider is kept as-is. This is what stops a Faux session
+    // being silently re-pointed at a paid provider when this device's default provider changes.
+    if (
+      model &&
+      (this.providers as readonly string[]).includes(model.provider) &&
+      this.models.getModel(model.provider, model.modelId)
+    )
+      return { provider: model.provider, modelId: model.modelId };
     const provider = this.options.provider;
-    if (provider === "faux") {
-      const id = fauxModels.some((m) => m.id === model?.modelId) ? model!.modelId : fauxModels[0].id;
-      return { provider: "faux", modelId: id };
-    }
+    if (provider === "faux") return { provider: "faux", modelId: fauxModels[0].id };
     if (provider === "openrouter") {
       const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
-      return {
-        provider: "openrouter",
-        modelId: curatedModels.some((m) => m.id === exact) ? exact : defaultModelId,
-      };
+      const fallback = this.modelList.find((m) => m.provider === "openrouter")?.id ?? "";
+      return { provider: "openrouter", modelId: curatedModels.some((m) => m.id === exact) ? exact : fallback };
     }
-    const known = model && this.modelList.some((m) => m.provider === provider && m.id === model.modelId);
-    return { provider, modelId: known ? model!.modelId : (this.modelList[0]?.id ?? "") };
+    return { provider, modelId: this.modelList.find((m) => m.provider === provider)?.id ?? "" };
   }
 
   validateModel(model: unknown): ModelRef {
     const m = model as ModelRef | undefined;
     if (!m || typeof m.provider !== "string" || typeof m.modelId !== "string")
       throw invalid("model must be { provider, modelId }");
+    const registered = (this.providers as readonly string[]).includes(m.provider);
     const known =
-      this.options.provider === "faux"
-        ? m.provider === "faux" && fauxModels.some((f) => f.id === m.modelId)
-        : this.options.provider === "openrouter"
-          ? m.provider === "openrouter" &&
-            curatedModels.some((c) => c.id === m.modelId) &&
-            !!this.models.getModel(m.provider, m.modelId)
-          : m.provider === this.options.provider && !!this.models.getModel(m.provider, m.modelId);
+      registered &&
+      (m.provider === "faux"
+        ? fauxModels.some((f) => f.id === m.modelId)
+        : m.provider === "openrouter"
+          ? curatedModels.some((c) => c.id === m.modelId) && !!this.models.getModel(m.provider, m.modelId)
+          : !!this.models.getModel(m.provider, m.modelId));
     if (!known) throw invalid(`Unknown model ${m.provider}/${m.modelId}. Choose one from GET /v1/device models`);
     return { provider: m.provider, modelId: m.modelId };
   }

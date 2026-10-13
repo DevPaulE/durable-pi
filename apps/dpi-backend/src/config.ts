@@ -4,10 +4,12 @@
 import { existsSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { parseProvider, type ProviderId } from "./providers.js";
+import { parseProvider, parseProviders, type ProviderId } from "./providers.js";
 
 export interface BackendConfig {
   name: string;
+  /** Providers this device registers, default first; Faux is always included. */
+  providers: ProviderId[];
   host: string;
   port: number;
   home: string;
@@ -31,6 +33,8 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): Bac
   const home = expand(env.DPI_HOME ?? join(homedir(), ".dpi"));
   const envFile = expand(flag("--env-file", env.DPI_ENV_FILE ?? join(home, "backend.env")));
   if (existsSync(envFile)) process.loadEnvFile(envFile);
+  // Refused, never defaulted: an unknown name must not silently become OpenRouter.
+  const provider = parseProvider(env.DPI_PROVIDER ?? "openrouter");
   const config: BackendConfig = {
     name: flag("--name", env.DPI_DEVICE_NAME ?? hostname().replace(/\.local$/, "")),
     host: flag("--host", env.DPI_HOST ?? "127.0.0.1"),
@@ -42,8 +46,8 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): Bac
       .split(":")
       .filter(Boolean)
       .map((p) => resolve(expand(p))),
-    // Refused, never defaulted: an unknown name must not silently become OpenRouter.
-    provider: parseProvider(env.DPI_PROVIDER ?? "openrouter"),
+    provider,
+    providers: parseProviders(env.DPI_PROVIDERS, provider),
     token: env.DPI_TOKEN ?? "",
   };
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)

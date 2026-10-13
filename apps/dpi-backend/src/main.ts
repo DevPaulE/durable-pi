@@ -14,6 +14,7 @@ const store = await Store.open({
   startDirs: config.startDirs,
   name: config.name,
   provider: config.provider,
+  providers: config.providers,
 });
 
 const app = express();

@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { loadConfig } from "../src/config.js";
+import { Store } from "../src/store.js";
+import { tempStore } from "./helpers.js";
 import {
   DEFAULT_OLLAMA_BASE_URL,
   fetchOllamaModels,
@@ -99,4 +101,45 @@ test("model info: rows carry the provider that produced them", () => {
   assert.equal(rows[0].provider, "ollama");
   assert.equal(rows[0].id, "gemma4:31b");
   assert.equal(DEFAULT_OLLAMA_BASE_URL, "https://ollama.com/v1");
+});
+
+test("adding a remote provider does not re-point an existing Faux session", async () => {
+  // The device default becomes openrouter, but faux stays registered beside it.
+  const t = await tempStore();
+  const store = await Store.open({ ...t.options, provider: "openrouter", providers: ["openrouter", "faux"] });
+  try {
+    // Faux is still a valid choice, so a stored Faux session keeps working.
+    assert.deepEqual(store.validateModel({ provider: "faux", modelId: "echo" }), { provider: "faux", modelId: "echo" });
+    // The stored choice is honoured as-is instead of being re-pointed at a paid model.
+    assert.deepEqual(store.routedModel({ provider: "faux", modelId: "echo" }), { provider: "faux", modelId: "echo" });
+    // Faux rows are still offered alongside the remote provider's.
+    assert.ok(store.modelList.some((m) => m.provider === "faux"), "faux models remain listed");
+    // A provider that was not registered is still refused.
+    assert.throws(() => store.validateModel({ provider: "ollama", modelId: "whatever" }), /Unknown model/);
+  } finally {
+    await store.close();
+    await t.cleanup();
+  }
+});
+
+test("a Faux session reopened after the device adds a provider keeps its own model", async () => {
+  const t = await tempStore();
+  let store = await t.open();
+  const session = await store.create({ name: "Practice", cwd: t.work, model: { provider: "faux", modelId: "echo" } });
+  await store.close();
+
+  // Same device, same data dir — now defaulting to openrouter with faux registered beside it.
+  store = await Store.open({ ...t.options, provider: "openrouter", providers: ["openrouter", "faux"] });
+  try {
+    const row = store.list().find((s) => s.id === session.id)!;
+    assert.equal(row.provider, "faux", "stored provider is untouched by the new default");
+    assert.equal(row.model, "echo");
+    // Recovery routes the stored choice to itself, not to the device's new default.
+    assert.deepEqual(store.routedModel({ provider: row.provider, modelId: row.model }), { provider: "faux", modelId: "echo" });
+    // With no OpenRouter credential the remote catalog is empty, so nothing paid is offered.
+    assert.deepEqual(store.modelList.filter((m) => m.provider === "openrouter"), []);
+  } finally {
+    await store.close();
+    await t.cleanup();
+  }
 });
