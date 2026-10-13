@@ -1,101 +1,85 @@
-# HANDOFF — Durable Pi provider integration
+# Durable Pi — provider status
 
-State of record for this build. A fresh session should be able to read this file alone and know
-the mission, what is proven, what is open, and the next safe action.
+**As of 2026-10-12.** This is a dated snapshot, not a live document. Re-check the repo before
+treating anything here as current.
 
-**Branch:** `wo-provider-integrations`
-**Worktree:** `~/Projects/durable-pi-worktrees/provider-integrations`
-**Base:** `37165c6` (Dan's upstream fork point)
-**Commits:** `57ffb21` (RED anchor) → `6ccaf37` (implementation, green)
-**Status:** Phase 1 complete and verified. Phase 2 not started. Nothing deployed. No credentials used.
+This file began as the build handoff for the provider-integration work order. That work is finished
+and merged, so it now records **what is true**, and — just as importantly — what the original handoff
+said that is no longer true, because agents read this file and act on it.
 
-## Mission
+## Where things are
 
-Let a Durable Pi device run an explicitly chosen model provider — Faux, OpenRouter, Radius, or
-Ollama Cloud — instead of being hard-wired to Faux or OpenRouter. Faux stays the default for
-offline work. Verification belongs to Paul; this file does not grade its own work.
+- **One checkout:** `~/Projects/durable-pi`, branch `main` at `67cb2a4`, pushed to `origin`.
+  There is **no worktree any more** — `wo-provider-integrations` was fast-forwarded into `main` and
+  the worktree was removed. Both branches remain as markers.
+- **Deployed:** `local` (M1 Max) and `m6` (Mac mini) both run OpenRouter with **30 models**
+  (29 OpenRouter + Faux Echo), default `anthropic/claude-sonnet-5.5`. `compass` (exe.dev) is the only
+  Faux-only seat.
+- **Both M1 seats are launchd services:** `dev.dpi.hub` (cockpit on `:4781`) and `dev.dpi.backend`
+  (`:4780`). Both verified to restart themselves after `kill -9`.
+- **Model selection is per device and per session.** `DPI_PROVIDER` sets the default for new
+  sessions; `DPI_PROVIDERS` lists every provider the device registers, default first. **Faux is
+  always registered**, so an existing Faux session is never silently re-pointed at a paid model.
 
-## Why this exists
+## Corrections to the original handoff — do not act on the old claims
 
-`DPI_PROVIDER` was silently coerced before this branch:
+| The handoff said | Actually true now |
+|---|---|
+| "Nothing is deployed. M6 still runs Faux from the frozen checkout." | Both `local` and `m6` are deployed on OpenRouter with 30 models. |
+| "No real provider call has ever been made." | A real call has been made: `anthropic/claude-sonnet-5.5`, 8 max tokens, returned `working`, 17+3 tokens. |
+| "Worktree `~/Projects/durable-pi-worktrees/provider-integrations`" | Deleted. The branch is merged into `main`. |
+| "11/11 tests pass" | Now **13/13** — two more tests pin the Faux-session protection. |
+| "Next safe action: choose one provider." | Chosen and shipped twice. The next action is Phase 2. |
 
-```
-DPI_PROVIDER=nope   -> "openrouter"
-DPI_PROVIDER=ollama -> "openrouter"
-```
-
-Any unknown or unimplemented value became OpenRouter. That is why an unimplemented provider could
-look supported without being supported.
-
-## What is proven (run these yourself)
+## What is proven
 
 ```bash
-cd ~/Projects/durable-pi-worktrees/provider-integrations/apps/dpi-backend
-npm ci                # first time in a fresh worktree
-npx tsx --test tests/providers.test.ts tests/store.test.ts tests/api.test.ts
-npm run check
+cd ~/Projects/durable-pi/apps/dpi-backend
+npx tsx --test tests/providers.test.ts tests/store.test.ts tests/api.test.ts   # 13/13
+npm run check                                                                 # tsc clean
 ```
 
-Result on 2026-10-12: **11/11 tests pass**, `tsc --noEmit` clean.
+- An unknown `DPI_PROVIDER` or `DPI_PROVIDERS` entry **throws**, naming the accepted values. It never
+  silently becomes OpenRouter.
+- Adding a remote provider does not re-point a stored Faux session; a Faux session reopened on an
+  OpenRouter device keeps its own model.
+- OpenRouter inference works end to end from the credential path.
 
-Specifically:
+## What is NOT proven
 
-- An unknown `DPI_PROVIDER` now throws (`config.ts`), naming the accepted values.
-- `faux` and `openrouter` behave exactly as before; the pre-existing store/api suites are untouched and green.
-- The Ollama Cloud catalog fetch is tested against a **local stub server**, not the real endpoint:
-  the bearer key is sent, ids map to `ollama` models on `openai-completions`, a non-200 fails
-  loudly, and an empty catalog is an error rather than a silent empty list.
+- **Radius has never been exercised.** Registered through pi-ai's built-in provider; its
+  OAuth/API-key path is untested.
+- **Ollama Cloud has never been contacted.** Its catalog is read from the endpoint at runtime and no
+  list was invented; `OLLAMA_ASSUMED_CONTEXT_WINDOW = 32768` is a floor, not a measurement.
+- **Full macOS reboot recovery is untested.** launchd agents start at *login*, so with FileVault on
+  and no auto-login the post-reboot login is manual.
+- **`rg` is absent from the agent's shell on both machines.** The backend's PATH comes from the
+  generated plist; Pi's bundled ripgrep lives at `~/.pi/agent/bin/rg`, which is not on it. Agents
+  that reach for `rg` get exit 127.
+- **Trailing whitespace in `.env` values is not trimmed** by `localEnv`
+  (`apps/dpi-sdk/src/node/drivers.ts:51`). Leading whitespace, CR and quotes are handled.
 
-## Files
+## Credential
 
-| Path | What it does |
-|---|---|
-| `apps/dpi-backend/src/providers.ts` | Provider ids, `parseProvider`, Ollama catalog fetch, `registerProvider`, `modelInfos`, `defaultModelFor` |
-| `apps/dpi-backend/src/config.ts` | `DPI_PROVIDER` parsed through `parseProvider` — refuse, never default |
-| `apps/dpi-backend/src/store.ts` | Registers the chosen provider; provider-aware model listing, routing and validation |
-| `apps/dpi-backend/tests/providers.test.ts` | The RED anchor plus the new tests |
+One inference key, `OPENROUTER_API_KEY`, in `~/Projects/durable-pi/.env` (mode 600, gitignored),
+copied by **name** into each device's `~/.dpi/backend.env`. Never sent to clients, never printed.
 
-## What is NOT proven — read this before believing anything
-
-- **No real provider call has ever been made.** Every test uses a local stub. OpenRouter, Radius and
-  Ollama Cloud have not been contacted.
-- **Ollama Cloud model names are not verified.** The provider reads them from the endpoint at
-  runtime. No hardcoded list was invented.
-- **The Ollama context window is assumed**, not measured — `OLLAMA_ASSUMED_CONTEXT_WINDOW = 32768`,
-  because the catalog endpoint does not report one. Treat it as a floor.
-- **Radius has not been exercised at all.** It is registered through pi-ai's built-in provider; its
-  OAuth/API-key path is untested here.
-- **Nothing is deployed.** M6 still runs Faux from the frozen checkout. Serving from this branch is
-  a separate, explicit decision.
-- **No credential has been read, copied, or printed.** `~/.pi/agent/auth.json` was never opened.
-
-## Next safe action
-
-**Paul's gate:** choose one provider and its credential path, then decide whether to serve this
-branch to a device. Two options, and the first needs no new code:
-
-1. **OpenRouter — already implemented, no new code.** Add `OPENROUTER_API_KEY` to the Durable Pi
-   `.env` (Paul's hands; Aria never reads the value), list it in `dpi-network.yaml` `env_keys`, and
-   set that device's `DPI_PROVIDER=openrouter`. `just net up <id>` re-provisions.
-2. **Ollama Cloud — this branch.** Same shape with `OLLAMA_API_KEY` and `DPI_PROVIDER=ollama`.
-
-Until then the device offers no model and creation fails loudly, which is the intended fail-closed
-behaviour.
+A **provisioning/management** key cannot run inference and fails chat completions with
+`401 User not found.` If a 401 like that appears, check `GET https://openrouter.ai/api/v1/auth/key`
+and look at `is_provisioning_key`. Note that `GET /api/v1/models` returns 200 **with no auth at
+all** — a populated model catalog is not evidence that a key works.
 
 ## Boundaries
 
-- Foundry is a no-write zone (53 uncommitted entries; WO-041 in flight). This is a **local** scope,
-  not a formal Foundry EWO, and nothing here authorizes edits there.
-- Do not bind to `0.0.0.0`; do not expose a public port; Tailscale is the access boundary.
-- Do not read or copy `.env` or credential files. Names only, never values.
-- Do not switch M6 away from Faux, install a model, or make a real provider call without Paul's
-  explicit go for that specific action.
-- Discarding this work: `git worktree remove ~/Projects/durable-pi-worktrees/provider-integrations`
-  and `git branch -D wo-provider-integrations`. Confirm with Paul first — it is reversible only by
-  re-creating the branch from the commits above.
+- Foundry is a no-write zone (53 uncommitted entries; WO-041 in flight). Nothing here authorizes
+  edits there.
+- No `0.0.0.0` bind, no public port. The Tailscale mesh is the access boundary.
+- Never read, copy or print credential values. Names only.
+- The backend shell is **not a sandbox**: a token is a shell. `start_dirs` only set where sessions
+  begin.
 
-## Phase 2 — not started
+## Next — Phase 2
 
-The synthetic event → classifier → durable task → Ready-for-Review proof. Deferred until a
-permitted model/classifier path is configured. The existing `apps/proactive-dpi-demo` is the
-reference, and it is a loopback-only mock whose agent shell is unsandboxed.
+One synthetic event → classifier → durable task → **Ready for Review**. No auto-send, no production
+data. `apps/proactive-dpi-demo` is the reference implementation and is a loopback-only mock whose
+agent shell is unsandboxed.
