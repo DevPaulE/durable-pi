@@ -36,7 +36,7 @@ test("Ollama Cloud: the catalog comes from the endpoint, with the key as a beare
   let seenAuth: string | undefined;
   const server = createServer((req, res) => {
     seenAuth = req.headers.authorization;
-    if (req.url === "/models") {
+    if (req.url?.endsWith("/models")) {
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ object: "list", data: [{ id: "gemma4:31b", object: "model" }, { id: "qwen3:cloud", object: "model" }] }));
       return;
@@ -71,6 +71,21 @@ test("Ollama Cloud: a non-200 answer fails loudly instead of returning an empty 
   const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
   try {
     await assert.rejects(() => fetchOllamaModels(baseUrl, "bad-key"), /401/);
+  } finally {
+    server.close();
+  }
+});
+
+test("Ollama Cloud: an empty catalog is an error, not a silent success", async () => {
+  const server = createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ object: "list", data: [] }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const baseUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`;
+  try {
+    await assert.rejects(() => fetchOllamaModels(baseUrl, "test-key"), /returned no models/);
   } finally {
     server.close();
   }

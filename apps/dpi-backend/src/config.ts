@@ -4,6 +4,7 @@
 import { existsSync } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { join, resolve } from "node:path";
+import { parseProvider, type ProviderId } from "./providers.js";
 
 export interface BackendConfig {
   name: string;
@@ -13,7 +14,7 @@ export interface BackendConfig {
   envFile: string;
   dataDir: string;
   startDirs: string[];
-  provider: "openrouter" | "faux";
+  provider: ProviderId;
   token: string;
 }
 
@@ -41,7 +42,8 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): Bac
       .split(":")
       .filter(Boolean)
       .map((p) => resolve(expand(p))),
-    provider: (env.DPI_PROVIDER ?? "openrouter") === "faux" ? "faux" : "openrouter",
+    // Refused, never defaulted: an unknown name must not silently become OpenRouter.
+    provider: parseProvider(env.DPI_PROVIDER ?? "openrouter"),
     token: env.DPI_TOKEN ?? "",
   };
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)
