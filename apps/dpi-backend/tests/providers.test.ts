@@ -7,13 +7,16 @@ import { once } from "node:events";
 import { loadConfig } from "../src/config.js";
 import { Store } from "../src/store.js";
 import { tempStore } from "./helpers.js";
+import { fauxModels } from "../src/faux.js";
 import {
   DEFAULT_OLLAMA_BASE_URL,
+  defaultModelFor,
   fetchOllamaModels,
   isProviderId,
   modelInfos,
   PROVIDER_IDS,
 } from "../src/providers.js";
+import { ollamaDefaultModelId } from "../src/model-catalog.js";
 
 const baseEnv = { DPI_TOKEN: "x".repeat(40), DPI_ENV_FILE: "/nonexistent/absent.env" };
 
@@ -142,4 +145,12 @@ test("a Faux session reopened after the device adds a provider keeps its own mod
     await store.close();
     await t.cleanup();
   }
+});
+
+test("defaultModelFor: plan-covered ollama default, else fail closed to Faux", () => {
+  const live = [{ id: "glm-5.3-flash" }, { id: "qwen3.8" }];
+  assert.equal(defaultModelFor("ollama", live), ollamaDefaultModelId);
+  // If the plan's default disappears from the catalog, a new session must never land on
+  // catalog-order luck (available[0]) — it falls back to the free Faux model.
+  assert.equal(defaultModelFor("ollama", [{ id: "qwen3.8" }]), fauxModels[0].id);
 });

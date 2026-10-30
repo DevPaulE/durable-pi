@@ -11,7 +11,7 @@ import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completio
 import { openrouterProvider } from "@earendil-works/pi-ai/providers/openrouter";
 import { radiusProvider } from "@earendil-works/pi-ai/providers/radius";
 import type { ModelInfo } from "../../dpi-sdk/src/api.js";
-import { curatedModels, defaultModelId } from "./model-catalog.js";
+import { curatedModels, defaultModelId, ollamaDefaultModelId } from "./model-catalog.js";
 import { fauxModels, installFaux } from "./faux.js";
 
 export type ProviderId = "faux" | "openrouter" | "radius" | "ollama";
@@ -160,7 +160,11 @@ export function modelInfos(providerId: ProviderId, available: readonly LiveModel
 /** The model a new session gets when the caller names none. */
 export function defaultModelFor(providerId: ProviderId, available: readonly { id: string }[]): string {
   if (providerId === "faux") return fauxModels[0].id;
-  const preferred = providerId === "openrouter" ? defaultModelId : providerId === "radius" ? "balanced" : available[0]?.id;
+  const preferred =
+    providerId === "openrouter" ? defaultModelId :
+    providerId === "radius" ? "balanced" :
+    providerId === "ollama" ? ollamaDefaultModelId :
+    available[0]?.id;
   // If the external provider has no auth/model yet, default to the free Faux model, never a
   // guessed or paid model. The user must explicitly choose a remote model from the catalog.
   return preferred && available.some((model) => model.id === preferred) ? preferred : fauxModels[0].id;
