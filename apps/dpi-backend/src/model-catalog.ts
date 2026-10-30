@@ -177,4 +177,8 @@ export const curatedModels = [
     icon: "gemini.png",
   },
 ] as const;
-export const defaultModelId = "anthropic/claude-sonnet-5.5";
+// Cheapest curated model with usable capability, kept as the default so new sessions do not
+// silently start on a top-tier paid model.
+export const defaultModelId = "deepseek/deepseek-v4.1-flash";
+/** The plan-covered default on Ollama Cloud (same model the LifeOS pi session runs). */
+export const ollamaDefaultModelId = "glm-5.3-flash";
