@@ -43,6 +43,18 @@ if (host !== "127.0.0.1" && host !== "localhost") {
       if (a.family === "IPv4") allowedHosts.add(`${a.address}:${port}`);
 }
 
+// Names the interface scan cannot discover, declared by the operator. The
+// Tailscale DNS name is the case this exists for: os.hostname() returns
+// `Pauls-MacBook-Pro.local`, so `<machine>.<tailnet>.ts.net` is never in the
+// set above and a phone opening that URL gets 421 from the guard below.
+// Comma-separated; an entry without a port is given this hub's port. Kept as
+// an allowlist and never a wildcard — this set is the only DNS-rebinding
+// defence on /api, which has no auth of its own.
+for (const entry of (process.env.DPI_HUB_ALLOWED_HOSTS ?? "").split(",")) {
+  const name = entry.trim().toLowerCase();
+  if (name) allowedHosts.add(name.includes(":") ? name : `${name}:${port}`);
+}
+
 const err = (code: string, message: string) => ({ error: { code, message } });
 type Handler = (req: express.Request, res: express.Response) => unknown;
 const safe =
