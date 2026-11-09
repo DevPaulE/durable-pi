@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#171214">
+<title>D5 · Dialogs</title>
+<style>
+:root{
+  --bg:#171214;--surface:#1f1a1c;--surface-2:#262023;--border:rgba(255,255,255,.07);
+  --text:#e8e2e1;--muted:#9a8f8d;--faint:#6d6563;
+  --ok:#4ade80;--warn:#fbbf24;--err:#f87171;--accent:#c8794f;
+  --font-ui:system-ui,-apple-system,sans-serif;
+  --font-mono:ui-monospace,"SF Mono","JetBrains Mono",monospace;
+  --r:6px;--r-chip:3px;--row:30px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--text);font:13px/1.45 var(--font-ui);-webkit-font-smoothing:antialiased}
+body{padding:24px 24px 48px}
+.m,code,pre,kbd{font-family:var(--font-mono);font-size:12px}
+pre{white-space:pre}
+.muted{color:var(--muted)}.faint{color:var(--faint)}.strong{font-weight:600}
+.c-ok{color:var(--ok)}.c-warn{color:var(--warn)}.c-err{color:var(--err)}
+a{color:inherit}
+
+/* page chrome around frames (not part of the app) */
+.page-head{display:flex;gap:12px;align-items:baseline;margin-bottom:4px}
+.page-head h1{font-size:15px;font-weight:600}
+.page-head a{color:var(--muted);text-decoration:none}
+.frame-label{color:var(--muted);margin:20px 0 8px;font-size:12px;max-width:1280px}
+.frame-label b{color:var(--text);font-weight:600}
+.frame{position:relative;width:1280px;height:800px;border:1px solid var(--border);overflow:hidden;background:var(--bg)}
+.frame.narrow{width:860px;height:780px}
+.frames-row{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+
+/* app shell */
+.app{display:grid;grid-template-rows:40px minmax(0,1fr);height:100%}
+.main{display:grid;grid-template-columns:256px minmax(0,1fr) 336px;min-height:0}
+.main.no-insp{grid-template-columns:256px minmax(0,1fr)}
+.main.railed{grid-template-columns:48px minmax(0,1fr)}
+.pane{min-height:0;overflow:hidden;display:flex;flex-direction:column}
+.pane+.pane{border-left:1px solid var(--border)}
+.side{background:var(--surface)}
+.pane-head{height:34px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border);color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.pane-head .r{margin-left:auto;text-transform:none;letter-spacing:0}
+
+/* top bar */
+.top{display:flex;align-items:center;gap:18px;padding:0 12px;border-bottom:1px solid var(--border);white-space:nowrap;min-width:0}
+.brand{display:flex;gap:8px;align-items:center;font-weight:600}
+.brand .mark{width:18px;height:18px;border:1px solid var(--muted);border-radius:3px;display:grid;place-items:center;font:600 10px var(--font-mono);color:var(--text)}
+.health{display:flex;gap:14px;align-items:center;color:var(--muted);min-width:0;overflow:hidden}
+.health .hd{display:inline-flex;gap:6px;align-items:center}
+.health .sep{width:1px;height:16px;background:var(--border)}
+.spacer{flex:1}
+.need-chip{display:inline-flex;align-items:center;gap:8px;height:26px;padding:0 10px;border-radius:var(--r-chip);background:var(--warn);color:var(--bg);font-weight:600}
+.need-chip .st.need{background:var(--bg)}
+.need-chip kbd{border-color:var(--bg);color:var(--bg);background:transparent}
+.need-chip .m{font-weight:600}
+.need-zero{display:inline-flex;align-items:center;gap:6px;color:var(--muted)}
+.live{display:inline-flex;gap:6px;align-items:center;color:var(--muted)}
+kbd{display:inline-block;border:1px solid var(--border);border-radius:var(--r-chip);padding:0 5px;line-height:16px;color:var(--muted);background:var(--surface);font-size:11px}
+.iconbtn{height:26px;min-width:26px;padding:0 8px;border:1px solid var(--border);border-radius:var(--r);display:inline-flex;align-items:center;gap:6px;color:var(--muted);background:transparent}
+
+/* status glyphs: color AND shape (DG2) */
+.st{display:inline-block;width:8px;height:8px;flex:none}
+.st.ok{background:var(--ok);border-radius:50%}
+.st.idle{border:1.5px solid var(--muted);border-radius:50%}
+.st.busy{border:2px solid var(--warn);border-radius:50%}
+.st.need{background:var(--warn);transform:rotate(45deg);width:8px;height:8px;margin:0 1px}
+.st.off{border:1.5px solid var(--err)}
+.st.fail{background:var(--err)}
+.st.stale{border:1.5px dashed var(--muted);border-radius:50%}
+.st.lg{width:10px;height:10px}
+.pulse{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.3}}
+.sw{font:11px var(--font-mono)}
+.sw.busy{color:var(--warn)}.sw.err{color:var(--err)}.sw.ok{color:var(--ok)}
+.tagchip{display:inline-flex;align-items:center;gap:6px;height:18px;padding:0 6px;border-radius:var(--r-chip);border:1px solid var(--border);font:11px var(--font-mono);color:var(--muted)}
+.tagchip.need{background:var(--warn);border-color:var(--warn);color:var(--bg);font-weight:600;font-family:var(--font-ui);letter-spacing:.04em}
+.tagchip.need .st.need{background:var(--bg)}
+
+/* tree */
+.rows{padding:6px 0;overflow:hidden;flex:1}
+.row{height:var(--row);display:flex;align-items:center;gap:8px;padding:0 12px;white-space:nowrap;position:relative;min-width:0}
+.row .lbl{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.row .meta{margin-left:auto;color:var(--muted);font-size:11px;flex:none}
+.row.dev .lbl{font-weight:600}
+.row.l1{padding-left:26px}.row.l2{padding-left:42px}
+.row.l1::before,.row.l2::before{content:"";position:absolute;top:0;bottom:0;width:1px;background:var(--border)}
+.row.l1::before{left:15px}.row.l2::before{left:31px}
+.row.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px}
+.row.need-row{background:var(--surface-2)}
+.row.dim .lbl,.row.dim .meta{color:var(--faint)}
+.tree-foot{border-top:1px solid var(--border);padding:8px 12px;display:flex;gap:8px;align-items:center}
+.offline-panel{margin:6px 12px 10px;border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+.offline-panel .h{display:flex;gap:8px;align-items:center;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.offline-panel .d{display:flex;gap:8px;align-items:center}
+.section-lbl{padding:10px 12px 4px;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+
+/* center */
+.ctr{background:var(--bg)}
+.crumb{display:flex;gap:6px;align-items:center;min-width:0;color:var(--muted);text-transform:none;letter-spacing:0;font-size:12px}
+.crumb .cur{color:var(--text)}
+.stream{flex:1;overflow:hidden;padding:4px 20px 12px;display:flex;flex-direction:column;justify-content:flex-end}
+.stream.top-anchored{justify-content:flex-start}
+.item.wide{grid-template-columns:62px minmax(0,1fr)}
+.nest .field{grid-template-columns:92px minmax(0,1fr)}
+.st.gate{border:1.5px solid var(--muted);transform:rotate(45deg);width:8px;height:8px;margin:0 1px}
+.item{display:grid;grid-template-columns:62px minmax(0,1fr) auto;gap:12px;padding:9px 0;border-bottom:1px solid var(--border);align-items:start}
+.item>.t{color:var(--muted);font:11px/19px var(--font-mono)}
+.item>.lg{color:var(--muted);font-size:11px;line-height:19px;white-space:nowrap}
+.who{display:flex;gap:8px;align-items:center;font-size:11px;color:var(--muted);margin-bottom:2px}
+.who .m{font-size:11px}
+.body p+p{margin-top:6px}
+.tool-line{display:flex;gap:8px;align-items:center;min-width:0}
+.tool-line .args{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.tool-line .dur{margin-left:auto;color:var(--muted);font:11px var(--font-mono);flex:none}
+.chev{color:var(--muted);width:10px;flex:none;font-size:10px}
+.codebox{margin-top:8px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;line-height:1.55;overflow:hidden}
+.codebox .cm{color:var(--muted)}
+.cursor{display:inline-block;width:7px;height:14px;background:var(--text);vertical-align:-2px;margin-left:2px}
+.composer{border-top:1px solid var(--border);padding:10px 20px 12px;flex:none}
+.composer .box{border:1px solid var(--border);border-radius:var(--r);background:var(--surface);padding:10px 12px;display:flex;flex-direction:column;gap:10px}
+.composer .cph{color:var(--muted)}
+.composer .bar{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:11px}
+.composer.disabled .box{background:var(--bg)}
+
+/* job card */
+.job{border:1px solid var(--border);border-radius:var(--r);background:var(--surface);margin-top:2px;overflow:hidden}
+.job-head{display:flex;align-items:center;gap:10px;padding:9px 12px;min-width:0;white-space:nowrap}
+.job-head .ttl{font-weight:600}
+.job-head .r{margin-left:auto;display:flex;gap:12px;align-items:center;color:var(--muted)}
+.phasebar{display:grid;grid-template-columns:repeat(5,1fr);gap:3px;padding:0 12px}
+.phasebar i{height:4px;border-radius:2px;background:var(--surface-2)}
+.phasebar i.ok{background:var(--ok)}.phasebar i.busy{background:var(--warn)}.phasebar i.need{background:var(--warn)}
+.phasebar i.need{background:transparent;border:1px solid var(--warn);height:4px}
+.phase-names{display:grid;grid-template-columns:repeat(5,1fr);gap:3px;padding:4px 12px 9px;font:11px var(--font-mono);color:var(--muted)}
+.phase-names .cur{color:var(--text)}
+.job-foot{display:flex;gap:14px;align-items:center;padding:8px 12px;border-top:1px solid var(--border);color:var(--muted);font-size:12px;white-space:nowrap}
+
+/* expanded job (D3) */
+.phases{border-top:1px solid var(--border)}
+.ph{display:grid;grid-template-columns:14px 110px minmax(0,1fr) 70px;gap:10px;align-items:center;padding:0 12px;height:30px;border-bottom:1px solid var(--border)}
+.ph .n{font:11px var(--font-mono);color:var(--muted)}
+.ph .nm{font-family:var(--font-mono);font-size:12px}
+.ph .out{color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.ph .tm{text-align:right;font:11px var(--font-mono);color:var(--muted)}
+.ph.cur{background:var(--surface-2)}
+.steps{padding:4px 12px 10px 36px;border-bottom:1px solid var(--border);background:var(--surface-2)}
+.step{display:grid;grid-template-columns:62px minmax(0,1fr) 78px 48px;gap:10px;align-items:center;height:25px;white-space:nowrap}
+.step>.m{overflow:hidden;text-overflow:ellipsis}
+.step .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.step .s{font:11px var(--font-mono);text-align:right}
+.step .d{font:11px var(--font-mono);color:var(--muted);text-align:right}
+.step.sel{outline:1px solid var(--accent);outline-offset:-1px;border-radius:3px}
+.log{margin-top:6px;background:var(--bg);border:1px solid var(--border);border-radius:var(--r);padding:8px 10px;line-height:1.6;font-size:11.5px;overflow:hidden}
+.log .ts{color:var(--faint)}
+.log .ln{color:var(--muted)}
+.ckpts{display:flex;gap:8px;align-items:center;padding:9px 12px;border-bottom:1px solid var(--border);white-space:nowrap;overflow:hidden}
+.ck{display:inline-flex;gap:6px;align-items:center;height:22px;padding:0 8px;border:1px solid var(--border);border-radius:var(--r-chip);font:11px var(--font-mono);color:var(--muted)}
+.ck b{color:var(--text);font-weight:600}
+.ck-line{flex:none;width:18px;height:1px;background:var(--border)}
+
+/* approval gate (P5) */
+.gate{border:1px solid var(--warn);border-radius:var(--r);background:var(--surface);margin:10px 0 4px}
+.gate-head{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--border);white-space:nowrap}
+.gate-head .ttl{font-weight:600;font-size:14px}
+.gate-head .r{margin-left:auto;color:var(--muted)}
+.gate-body{padding:12px 14px;display:flex;flex-direction:column;gap:10px}
+.gate-body .codebox{margin-top:6px}
+.checks{display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center}
+.checks div{display:flex;gap:8px;align-items:center}
+.gate-actions{display:flex;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--border)}
+.gate-actions .note{color:var(--muted);margin-left:6px}
+
+/* buttons */
+.btn{height:28px;padding:0 12px;border-radius:var(--r);border:1px solid var(--border);background:var(--surface-2);color:var(--text);font:inherit;display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.btn.sm{height:24px;padding:0 9px;font-size:12px}
+.btn.lg{height:34px;padding:0 16px;font-size:14px}
+.btn.primary{background:var(--text);color:var(--bg);border-color:var(--text);font-weight:600}
+.btn.primary kbd{background:transparent;border-color:var(--bg);color:var(--bg)}
+.btn.ghost{background:transparent}
+.btn[disabled]{color:var(--faint)}
+.focus{outline:2px solid var(--accent);outline-offset:2px}
+
+/* inspector */
+.sess-sum{padding:12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:8px;flex:none}
+.sess-sum .t1{display:flex;gap:8px;align-items:center}
+.sess-sum .t1 .nm{font-weight:600}
+.ctx{display:flex;flex-direction:column;gap:4px}
+.ctx .bar{height:4px;background:var(--surface-2);border-radius:2px;overflow:hidden}
+.ctx .bar i{display:block;height:100%;background:var(--muted)}
+.ctx .lbls{display:flex;justify-content:space-between;color:var(--muted);font-size:11px}
+.tabs{display:flex;gap:2px;padding:0 6px;border-bottom:1px solid var(--border);flex:none}
+.tab{height:34px;padding:0 9px;display:flex;align-items:center;gap:6px;color:var(--muted);border-bottom:1px solid transparent}
+.tab.on{color:var(--text);border-bottom-color:var(--accent)}
+.insp-body{padding:12px;overflow:hidden;flex:1;display:flex;flex-direction:column;gap:14px}
+.kv{display:grid;grid-template-columns:88px minmax(0,1fr);gap:7px 12px;align-items:baseline}
+.kv>.k{color:var(--muted);font-size:12px}
+.kv>.v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grp-lbl{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;display:flex;gap:8px;align-items:center}
+.grp-lbl .r{margin-left:auto;text-transform:none;letter-spacing:0}
+.field{display:grid;grid-template-columns:118px minmax(0,1fr);gap:10px;align-items:center;min-height:28px}
+.field .k{font-family:var(--font-mono);font-size:12px;color:var(--muted)}
+.input{height:26px;border:1px solid var(--border);border-radius:var(--r);background:var(--bg);padding:0 8px;display:flex;align-items:center;font:12px var(--font-mono);color:var(--text);min-width:0}
+.input.focus{outline:1px solid var(--accent);outline-offset:-1px}
+.input.ro{background:transparent;color:var(--muted)}
+.stepper{display:flex;gap:0}
+.stepper .input{border-radius:var(--r) 0 0 var(--r);width:72px}
+.stepper span{height:26px;width:24px;border:1px solid var(--border);border-left:0;display:grid;place-items:center;color:var(--muted)}
+.stepper span:last-child{border-radius:0 var(--r) var(--r) 0}
+.toggle{width:28px;height:16px;border-radius:8px;background:var(--surface-2);border:1px solid var(--border);position:relative}
+.toggle::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--muted)}
+.toggle.on{background:var(--muted)}
+.toggle.on::after{left:14px;background:var(--text)}
+.nest{border-left:1px solid var(--border);margin-left:4px;padding-left:10px;display:flex;flex-direction:column;gap:4px}
+.list{display:flex;flex-direction:column}
+.li{display:flex;gap:8px;align-items:center;height:30px;border-bottom:1px solid var(--border);white-space:nowrap;min-width:0}
+.li .r{margin-left:auto;color:var(--muted);font-size:11px}
+.li.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px;padding:0 6px;margin:0 -6px}
+
+/* overlays */
+.scrim{position:absolute;inset:0;background:color-mix(in srgb,var(--bg) 72%,transparent)}
+.dialog{position:absolute;left:50%;top:70px;transform:translateX(-50%);width:680px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r);display:flex;flex-direction:column}
+.dialog .dh{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.dialog .dh .ttl{font-weight:600;font-size:14px}
+.dialog .dh .r{margin-left:auto;color:var(--muted)}
+.dialog .db{padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+.dialog .df{display:flex;gap:10px;align-items:center;justify-content:flex-end;padding:10px 16px;border-top:1px solid var(--border)}
+.dialog .df .l{margin-right:auto;color:var(--muted);font-size:12px}
+.fl{display:flex;flex-direction:column;gap:6px}
+.fl>.lb{color:var(--muted);font-size:12px;display:flex;gap:8px}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.opt{height:30px;display:inline-flex;align-items:center;gap:8px;padding:0 10px;border:1px solid var(--border);border-radius:var(--r);white-space:nowrap}
+.opt.sel{outline:1px solid var(--accent);outline-offset:-1px;background:var(--surface-2)}
+.opt.dis{color:var(--faint)}
+.dirb{border:1px solid var(--border);border-radius:var(--r);background:var(--bg)}
+.dirb .path{display:flex;gap:4px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--border);font:12px var(--font-mono);color:var(--muted)}
+.dirb .path b{color:var(--text);font-weight:400}
+.dirb .rowd{display:grid;grid-template-columns:16px minmax(0,1fr) 220px 70px;gap:8px;align-items:center;height:28px;padding:0 10px;font:12px var(--font-mono)}
+.dirb .rowd .x{color:var(--muted);font-size:11px}
+.dirb .rowd.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px}
+.pal{position:absolute;left:50%;top:64px;transform:translateX(-50%);width:640px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r)}
+.pal .q{display:flex;gap:10px;align-items:center;height:44px;padding:0 14px;border-bottom:1px solid var(--border);font-size:14px}
+.pal .grp{padding:6px 0;border-bottom:1px solid var(--border)}
+.pal .gl{padding:4px 14px;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+.pal .pi{display:flex;gap:10px;align-items:center;height:32px;padding:0 14px;white-space:nowrap}
+.pal .pi .r{margin-left:auto;display:flex;gap:6px;align-items:center;color:var(--muted)}
+.pal .pi.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px}
+.pal .foot{display:flex;gap:14px;padding:8px 14px;color:var(--muted);font-size:11px}
+.mrow{display:grid;grid-template-columns:18px minmax(0,1fr) 70px 110px 70px;gap:10px;align-items:center;height:32px;padding:0 14px;white-space:nowrap}
+.mrow .x{color:var(--muted);font-size:11px;font-family:var(--font-mono)}
+.mrow.sel{background:var(--surface-2);outline:1px solid var(--accent);outline-offset:-1px}
+.mrow.dis{color:var(--faint)}.mrow.dis .x{color:var(--faint)}
+.mhead{display:grid;grid-template-columns:18px minmax(0,1fr) 70px 110px 70px;gap:10px;padding:8px 14px 4px;color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+
+/* empty / honesty states */
+.empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:40px;text-align:center}
+.empty .big{font-size:15px;font-weight:600}
+.empty p{color:var(--muted);max-width:440px}
+.banner{display:flex;gap:10px;align-items:center;padding:8px 12px;border:1px solid var(--border);border-radius:var(--r);background:var(--surface);margin:10px 0}
+.banner .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.stale-mark{font:11px var(--font-mono);color:var(--muted);border:1px dashed var(--muted);border-radius:var(--r-chip);padding:0 5px}
+.ghost-tree .row .lbl,.ghost-tree .row .meta{color:var(--muted)}
+
+/* narrow */
+.rail{background:var(--surface);display:flex;flex-direction:column;align-items:center;gap:4px;padding:8px 0}
+.rail .ri{width:36px;height:36px;border-radius:var(--r);display:grid;place-items:center;position:relative;font:600 11px var(--font-mono);color:var(--muted)}
+.rail .ri .st{position:absolute;right:4px;bottom:4px}
+.rail .ri.sel{outline:1px solid var(--accent);outline-offset:-1px;background:var(--surface-2);color:var(--text)}
+.sheet{position:absolute;left:0;right:0;bottom:0;height:62%;background:var(--surface);border-top:1px solid var(--border);border-radius:var(--r) var(--r) 0 0;display:flex;flex-direction:column}
+.sheet .grab{width:36px;height:4px;border-radius:2px;background:var(--faint);margin:8px auto 2px}
+.drawer{position:absolute;left:0;top:40px;bottom:0;width:300px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column}
+</style></head>
+<body>
+<div class="page-head"><h1>D5 · Dialogs</h1><span class="muted">control surfaces · new session + dir browser, model picker, command palette</span><span class="spacer"></span><a href="index.html">← all screens</a></div><div class="frame-label"><b>D5a — New session</b> — device (offline is shown and disabled with its reason), directory browser in mono, model, optional name.</div><div class="frame"><div class="app"><div class="top"><span class="brand"><span class="mark">π</span>Durable Pi</span><span class="m muted">home-net</span><div class="health"><span class="hd"><i class="st ok"></i><span class="m">m1-max</span></span><span class="hd"><i class="st ok"></i><span class="m">hetzner-cx22</span></span><span class="hd"><i class="st ok"></i><span class="m">mbp-paul</span></span><span class="hd"><i class="st off"></i><span class="m">pi5-garage</span></span><span class="sep"></span><span>7 sessions</span><span class="hd"><i class="st busy"></i>1 running</span></div><span class="spacer"></span><span class="need-zero"><i class="st idle"></i>0 need you</span><span class="live"><i class="st ok"></i>live</span><span class="iconbtn">Search or run… <kbd>⌘K</kbd></span><span class="iconbtn">?</span></div><div class="main"><div class="pane side"><div class="pane-head">Network<span class="r m">4 devices</span></div><div class="rows"><div class="row dev"><i class="st busy"></i><span class="lbl"><span class="m">m1-max</span></span><span class="meta"><span class="m">local</span></span></div><div class="row l1"><i class="st busy"></i><span class="lbl">aifund fixture refresh</span><span class="meta"><span class="m">s-7f3a2c</span></span></div><div class="row l2 sel"><i class="st busy"></i><span class="lbl"><span class="m">main</span></span><span class="meta"><span class="sw busy">running 4m</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">reviewer</span></span><span class="meta"><span class="m">idle</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">wiki ingest</span><span class="meta"><span class="m">s-21c90e</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">ingest</span></span><span class="meta"><span class="m">idle 2h</span></span></div><div class="row dev"><i class="st ok"></i><span class="lbl"><span class="m">hetzner-cx22</span></span><span class="meta"><span class="m">vps</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">release 0.4</span><span class="meta"><span class="m">s-9b04d1</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">deployer</span></span><span class="meta"><span class="m">idle 18m</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">nightly evals</span><span class="meta"><span class="m">s-5e7711</span></span></div><div class="row l2"><i class="st ok"></i><span class="lbl"><span class="m">eval-runner</span></span><span class="meta"><span class="sw ok">✓ 14/14</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">judge</span></span><span class="meta"><span class="m">idle</span></span></div><div class="row dev"><i class="st ok"></i><span class="lbl"><span class="m">mbp-paul</span></span><span class="meta"><span class="m">laptop</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">owner-book sync</span><span class="meta"><span class="m">s-3d18aa</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">bookkeeper</span></span><span class="meta"><span class="m">idle 1d</span></span></div></div><div class="offline-panel"><div class="h"><i class="st off"></i>Offline · 1</div><div class="d"><span class="m">pi5-garage</span><span class="meta muted" style="margin-left:auto;font-size:11px">seen <span class="m">14:02:11</span></span></div><div class="muted" style="font-size:12px">2 sessions held on device · <u>check now</u></div></div><div class="tree-foot"><span class="btn sm">+ New session <kbd>⌘N</kbd></span><span class="spacer"></span><span class="muted" style="font-size:11px">1 offline folded</span></div></div><div class="pane ctr"><div class="pane-head"><span class="crumb"><span class="m">m1-max</span><span>/</span><span>aifund fixture refresh</span><span>/</span><span class="m cur">main</span></span><span class="r"><span class="sw busy">running · job #14</span></span></div>
+<div class="stream"><div class="item"><span class="t">14:33:40</span><div class="body"><div class="who">you</div><p>Refresh the aifund fixture against today's filings, then rebuild <span class="m">out/</span>. Stop before publishing — I want to approve the diff.</p></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:33:44</span><div class="body"><div class="who"><span class="m">main</span></div><p>Starting job <span class="m">refresh-fixture</span>. Five phases; it checkpoints after <span class="m">analyze</span> and mid-<span class="m">build</span>, so it survives a restart. Phase 4 waits for your approval.</p></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:33:45</span><div class="body"><div class="tool-line"><span class="chev">▸</span><i class="st ok"></i><span class="m">jobs.start</span><span class="args m">{ job: "refresh-fixture" } → run #14</span><span class="dur">120ms</span></div></div><span class="lg">ledger ›</span></div><div class="item wide"><span class="t">14:33:45</span><div class="body"><div class="job"><div class="job-head"><i class="st busy lg pulse"></i><span class="ttl">Refresh aifund fixture</span><span class="m muted">refresh-fixture · #14</span><span class="r"><span class="sw busy">running · 3/5</span><span class="m">4m 51s</span><span>ledger ›</span></span></div>
+<div class="phasebar"><i class="ok"></i><i class="ok"></i><i class="busy"></i><i class=""></i><i class=""></i></div><div class="phase-names"><span class="">1 fetch</span><span class="">2 analyze</span><span class="cur">3 build</span><span class="">4 approve</span><span class="">5 publish</span></div>
+<div class="job-foot"><span>⚑ checkpoint <span class="m">#2</span> · <span class="m">14:39:58</span></span><span>·</span><span class="m">npm run build</span><span class="m muted">44s</span><span class="spacer"></span><span>owner <span class="m">main</span></span></div></div></div></div><div class="item"><span class="t">14:36:10</span><div class="body"><div class="tool-line"><span class="chev">▾</span><i class="st ok"></i><span class="m">read_file</span><span class="args m">{ path: "out/narrative.json", limit: 400 }</span><span class="dur">8ms</span></div><pre class="codebox"><span class="cm">// call</span>
+{ path: "out/narrative.json", limit: 400 }
+<span class="cm">// signature</span>
+read_file(params: {
+  path: string;     <span class="cm">// relative to the session cwd</span>
+  offset?: number;  <span class="cm">// first line, 1-based</span>
+  limit?: number;   <span class="cm">// max lines</span>
+}): string</pre></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:41:51</span><div class="body"><div class="who"><span class="m">main</span><span class="sw busy">streaming</span></div><p>Analyze found 3 new filings and one restated figure — Q3 revenue for <span class="m">ACME-HOLD</span>, <span class="m">412.0 → 409.6</span>. I wrote them into <span class="m">match-graph.json</span>; the build is regenerating <span class="m">out/index.html</span> now. Next, the approval gate will show the full diff before anything is published<span class="cursor"></span></p></div><span class="lg">ledger ›</span></div></div><div class="composer"><div class="box"><span class="cph">Message <span class="m">main</span> — <span class="m">/</span> for commands; queued while it works</span>
+<div class="bar"><span class="m">glm-5.3-flash</span><span>·</span><span>follow-up after current step</span><span class="spacer"></span><kbd>⌘⏎</kbd><span class="btn sm">Send</span></div></div></div></div><div class="pane side"><div class="sess-sum"><div class="t1"><i class="st busy"></i><span class="nm">aifund fixture refresh</span><span class="m muted" style="margin-left:auto">s-7f3a2c</span></div>
+<div class="ctx"><div class="bar"><i style="width:32%"></i></div><div class="lbls"><span>context <span class="m">41.2k</span> / <span class="m">128k</span></span><span class="m">32%</span></div></div></div><div class="tabs"><span class="tab">Session</span><span class="tab on">State</span><span class="tab">Tasks</span><span class="tab">Tools</span><span class="tab">Extend</span></div><div class="insp-body"><div class="grp-lbl">App State <span class="r m">demo.fixture · v14</span></div>
+<div class="field"><span class="k">targetBranch</span><span class="input">fixture/2026-11-09</span></div>
+<div class="field"><span class="k">maxRetries</span><span class="stepper"><span class="input">2</span><span>−</span><span>+</span></span></div>
+<div class="field"><span class="k">dryRun</span><span class="toggle"></span></div>
+<div class="field"><span class="k">publishOnApprove</span><span class="toggle on"></span></div>
+<div class="field"><span class="k">sources</span><span class="input">sec-edgar, ir-pages</span></div>
+<div class="field" style="align-items:start"><span class="k">thresholds ▾</span><div class="nest">
+<div class="field"><span class="k">restateDelta</span><span class="input focus">0.5<span class="faint" style="margin-left:auto">%</span></span></div>
+<div class="field"><span class="k">minFilings</span><span class="stepper"><span class="input">1</span><span>−</span><span>+</span></span></div></div></div>
+<div class="muted" style="font-size:12px">Edits apply at once and show here before the device confirms. <span class="m">restateDelta</span>: saving… </div>
+<div class="grp-lbl">Session</div>
+<div class="kv"><span class="k">device</span><span class="v m">m1-max</span><span class="k">cwd</span><span class="v m">~/dpi-work/aifund-fixture</span><span class="k">model</span><span class="v m">ollama/glm-5.3-flash</span><span class="k">agents</span><span class="v">2 · <span class="m">main</span>, <span class="m">reviewer</span></span><span class="k">created</span><span class="v m">2026-11-09 14:33:21</span></div></div></div></div></div><div class="scrim"></div><div class="dialog"><div class="dh"><span class="ttl">New session</span><span class="r"><kbd>Esc</kbd></span></div><div class="db">
+<div class="fl"><div class="lb">Device</div><div class="seg">
+<span class="opt sel"><i class="st ok"></i><span class="m">m1-max</span><span class="muted">local</span></span>
+<span class="opt"><i class="st ok"></i><span class="m">hetzner-cx22</span><span class="muted">vps</span></span>
+<span class="opt"><i class="st ok"></i><span class="m">mbp-paul</span><span class="muted">laptop</span></span>
+<span class="opt dis"><i class="st off"></i><span class="m">pi5-garage</span><span>offline</span></span></div></div>
+<div class="fl"><div class="lb">Working directory <span class="spacer"></span><span>start dirs: <span class="m">~/dpi-work</span></span></div>
+<div class="dirb"><div class="path"><span>~</span>/<span>dpi-work</span>/<b>aifund-fixture</b><span class="spacer"></span><span>↑ up <kbd>⌫</kbd></span></div>
+<div class="rowd"><span class="x">▸</span><span>build/</span><span class="x">git · fixture/2026-11-08</span><span class="x">2d ago</span></div>
+<div class="rowd sel"><span class="x">▸</span><span>out/</span><span class="x"></span><span class="x">8m ago</span></div>
+<div class="rowd"><span class="x">▸</span><span>scripts/</span><span class="x"></span><span class="x">4d ago</span></div>
+<div class="rowd"><span class="x">▸</span><span>sources/</span><span class="x"></span><span class="x">1h ago</span></div>
+<div class="rowd"><span class="x">▸</span><span>tests/</span><span class="x"></span><span class="x">4d ago</span></div></div>
+<div class="muted" style="font-size:12px">Session will start in <span class="m">~/dpi-work/aifund-fixture</span> · <kbd>⏎</kbd> to open a folder, <kbd>Space</kbd> to choose it</div></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+<div class="fl"><div class="lb">Model</div><span class="input" style="height:30px">ollama/glm-5.3-flash<span class="faint" style="margin-left:auto;font-family:var(--font-ui)">change <kbd>⌘M</kbd></span></span></div>
+<div class="fl"><div class="lb">Name <span class="faint">optional</span></div><span class="input focus" style="height:30px;font-family:var(--font-ui)">fixture out/ audit<span class="cursor" style="height:13px;width:1px"></span></span></div></div>
+</div><div class="df"><span class="l">Creates <span class="m">1</span> agent, <span class="m">main</span>. Nothing runs until you send a message.</span><span class="btn">Cancel</span><span class="btn primary">Create session <kbd>⌘⏎</kbd></span></div></div></div><div class="frame-label"><b>D5b — Model picker</b> — grouped by provider; ids, context and cost in mono; selection uses the one accent.</div><div class="frame"><div class="app"><div class="top"><span class="brand"><span class="mark">π</span>Durable Pi</span><span class="m muted">home-net</span><div class="health"><span class="hd"><i class="st ok"></i><span class="m">m1-max</span></span><span class="hd"><i class="st ok"></i><span class="m">hetzner-cx22</span></span><span class="hd"><i class="st ok"></i><span class="m">mbp-paul</span></span><span class="hd"><i class="st off"></i><span class="m">pi5-garage</span></span><span class="sep"></span><span>7 sessions</span><span class="hd"><i class="st busy"></i>1 running</span></div><span class="spacer"></span><span class="need-zero"><i class="st idle"></i>0 need you</span><span class="live"><i class="st ok"></i>live</span><span class="iconbtn">Search or run… <kbd>⌘K</kbd></span><span class="iconbtn">?</span></div><div class="main"><div class="pane side"><div class="pane-head">Network<span class="r m">4 devices</span></div><div class="rows"><div class="row dev"><i class="st busy"></i><span class="lbl"><span class="m">m1-max</span></span><span class="meta"><span class="m">local</span></span></div><div class="row l1"><i class="st busy"></i><span class="lbl">aifund fixture refresh</span><span class="meta"><span class="m">s-7f3a2c</span></span></div><div class="row l2 sel"><i class="st busy"></i><span class="lbl"><span class="m">main</span></span><span class="meta"><span class="sw busy">running 4m</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">reviewer</span></span><span class="meta"><span class="m">idle</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">wiki ingest</span><span class="meta"><span class="m">s-21c90e</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">ingest</span></span><span class="meta"><span class="m">idle 2h</span></span></div><div class="row dev"><i class="st ok"></i><span class="lbl"><span class="m">hetzner-cx22</span></span><span class="meta"><span class="m">vps</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">release 0.4</span><span class="meta"><span class="m">s-9b04d1</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">deployer</span></span><span class="meta"><span class="m">idle 18m</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">nightly evals</span><span class="meta"><span class="m">s-5e7711</span></span></div><div class="row l2"><i class="st ok"></i><span class="lbl"><span class="m">eval-runner</span></span><span class="meta"><span class="sw ok">✓ 14/14</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">judge</span></span><span class="meta"><span class="m">idle</span></span></div><div class="row dev"><i class="st ok"></i><span class="lbl"><span class="m">mbp-paul</span></span><span class="meta"><span class="m">laptop</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">owner-book sync</span><span class="meta"><span class="m">s-3d18aa</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">bookkeeper</span></span><span class="meta"><span class="m">idle 1d</span></span></div></div><div class="offline-panel"><div class="h"><i class="st off"></i>Offline · 1</div><div class="d"><span class="m">pi5-garage</span><span class="meta muted" style="margin-left:auto;font-size:11px">seen <span class="m">14:02:11</span></span></div><div class="muted" style="font-size:12px">2 sessions held on device · <u>check now</u></div></div><div class="tree-foot"><span class="btn sm">+ New session <kbd>⌘N</kbd></span><span class="spacer"></span><span class="muted" style="font-size:11px">1 offline folded</span></div></div><div class="pane ctr"><div class="pane-head"><span class="crumb"><span class="m">m1-max</span><span>/</span><span>aifund fixture refresh</span><span>/</span><span class="m cur">main</span></span><span class="r"><span class="sw busy">running · job #14</span></span></div>
+<div class="stream"><div class="item"><span class="t">14:33:40</span><div class="body"><div class="who">you</div><p>Refresh the aifund fixture against today's filings, then rebuild <span class="m">out/</span>. Stop before publishing — I want to approve the diff.</p></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:33:44</span><div class="body"><div class="who"><span class="m">main</span></div><p>Starting job <span class="m">refresh-fixture</span>. Five phases; it checkpoints after <span class="m">analyze</span> and mid-<span class="m">build</span>, so it survives a restart. Phase 4 waits for your approval.</p></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:33:45</span><div class="body"><div class="tool-line"><span class="chev">▸</span><i class="st ok"></i><span class="m">jobs.start</span><span class="args m">{ job: "refresh-fixture" } → run #14</span><span class="dur">120ms</span></div></div><span class="lg">ledger ›</span></div><div class="item wide"><span class="t">14:33:45</span><div class="body"><div class="job"><div class="job-head"><i class="st busy lg pulse"></i><span class="ttl">Refresh aifund fixture</span><span class="m muted">refresh-fixture · #14</span><span class="r"><span class="sw busy">running · 3/5</span><span class="m">4m 51s</span><span>ledger ›</span></span></div>
+<div class="phasebar"><i class="ok"></i><i class="ok"></i><i class="busy"></i><i class=""></i><i class=""></i></div><div class="phase-names"><span class="">1 fetch</span><span class="">2 analyze</span><span class="cur">3 build</span><span class="">4 approve</span><span class="">5 publish</span></div>
+<div class="job-foot"><span>⚑ checkpoint <span class="m">#2</span> · <span class="m">14:39:58</span></span><span>·</span><span class="m">npm run build</span><span class="m muted">44s</span><span class="spacer"></span><span>owner <span class="m">main</span></span></div></div></div></div><div class="item"><span class="t">14:36:10</span><div class="body"><div class="tool-line"><span class="chev">▾</span><i class="st ok"></i><span class="m">read_file</span><span class="args m">{ path: "out/narrative.json", limit: 400 }</span><span class="dur">8ms</span></div><pre class="codebox"><span class="cm">// call</span>
+{ path: "out/narrative.json", limit: 400 }
+<span class="cm">// signature</span>
+read_file(params: {
+  path: string;     <span class="cm">// relative to the session cwd</span>
+  offset?: number;  <span class="cm">// first line, 1-based</span>
+  limit?: number;   <span class="cm">// max lines</span>
+}): string</pre></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:41:51</span><div class="body"><div class="who"><span class="m">main</span><span class="sw busy">streaming</span></div><p>Analyze found 3 new filings and one restated figure — Q3 revenue for <span class="m">ACME-HOLD</span>, <span class="m">412.0 → 409.6</span>. I wrote them into <span class="m">match-graph.json</span>; the build is regenerating <span class="m">out/index.html</span> now. Next, the approval gate will show the full diff before anything is published<span class="cursor"></span></p></div><span class="lg">ledger ›</span></div></div><div class="composer"><div class="box"><span class="cph">Message <span class="m">main</span> — <span class="m">/</span> for commands; queued while it works</span>
+<div class="bar"><span class="m">glm-5.3-flash</span><span>·</span><span>follow-up after current step</span><span class="spacer"></span><kbd>⌘⏎</kbd><span class="btn sm">Send</span></div></div></div></div><div class="pane side"><div class="sess-sum"><div class="t1"><i class="st busy"></i><span class="nm">aifund fixture refresh</span><span class="m muted" style="margin-left:auto">s-7f3a2c</span></div>
+<div class="ctx"><div class="bar"><i style="width:32%"></i></div><div class="lbls"><span>context <span class="m">41.2k</span> / <span class="m">128k</span></span><span class="m">32%</span></div></div></div><div class="tabs"><span class="tab">Session</span><span class="tab on">State</span><span class="tab">Tasks</span><span class="tab">Tools</span><span class="tab">Extend</span></div><div class="insp-body"><div class="grp-lbl">App State <span class="r m">demo.fixture · v14</span></div>
+<div class="field"><span class="k">targetBranch</span><span class="input">fixture/2026-11-09</span></div>
+<div class="field"><span class="k">maxRetries</span><span class="stepper"><span class="input">2</span><span>−</span><span>+</span></span></div>
+<div class="field"><span class="k">dryRun</span><span class="toggle"></span></div>
+<div class="field"><span class="k">publishOnApprove</span><span class="toggle on"></span></div>
+<div class="field"><span class="k">sources</span><span class="input">sec-edgar, ir-pages</span></div>
+<div class="field" style="align-items:start"><span class="k">thresholds ▾</span><div class="nest">
+<div class="field"><span class="k">restateDelta</span><span class="input focus">0.5<span class="faint" style="margin-left:auto">%</span></span></div>
+<div class="field"><span class="k">minFilings</span><span class="stepper"><span class="input">1</span><span>−</span><span>+</span></span></div></div></div>
+<div class="muted" style="font-size:12px">Edits apply at once and show here before the device confirms. <span class="m">restateDelta</span>: saving… </div>
+<div class="grp-lbl">Session</div>
+<div class="kv"><span class="k">device</span><span class="v m">m1-max</span><span class="k">cwd</span><span class="v m">~/dpi-work/aifund-fixture</span><span class="k">model</span><span class="v m">ollama/glm-5.3-flash</span><span class="k">agents</span><span class="v">2 · <span class="m">main</span>, <span class="m">reviewer</span></span><span class="k">created</span><span class="v m">2026-11-09 14:33:21</span></div></div></div></div></div><div class="scrim"></div><div class="dialog" style="width:620px"><div class="dh"><span class="ttl">Model for <span class="m">main</span></span><span class="r">applies from the next turn · <kbd>Esc</kbd></span></div>
+<div class="pal" style="position:static;transform:none;width:auto;border:0;border-radius:0"><div class="q"><span class="muted">⌕</span><span class="m">flash</span><span class="cursor" style="width:1px"></span><span class="spacer"></span><span class="muted" style="font-size:12px">6 of 14</span></div></div>
+<div class="mhead"><span></span><span>ollama · local</span><span>context</span><span>cost in/out</span><span></span></div>
+<div class="mrow sel"><i class="st ok"></i><span class="m">ollama/glm-5.3-flash</span><span class="x">128k</span><span class="x">plan</span><span class="x">default</span></div>
+<div class="mrow"><i class="st ok"></i><span class="m">ollama/qwen3-coder-flash:30b</span><span class="x">256k</span><span class="x">plan</span><span class="x"></span></div>
+<div class="mhead"><span></span><span>openrouter</span><span></span><span></span><span></span></div>
+<div class="mrow"><i class="st ok"></i><span class="m">openrouter/deepseek-v4.1-flash</span><span class="x">164k</span><span class="x">$0.10/$0.40</span><span class="x">default</span></div>
+<div class="mrow"><i class="st ok"></i><span class="m">openrouter/google/gemini-3-flash</span><span class="x">1M</span><span class="x">$0.15/$0.60</span><span class="x"></span></div>
+<div class="mrow"><i class="st ok"></i><span class="m">openrouter/mistral/devstral-flash</span><span class="x">128k</span><span class="x">$0.08/$0.24</span><span class="x"></span></div>
+<div class="mhead"><span></span><span>faux · test</span><span></span><span></span><span></span></div>
+<div class="mrow"><i class="st idle"></i><span class="m">faux/echo-flash</span><span class="x">—</span><span class="x">$0</span><span class="x">tests only</span></div>
+<div class="dh" style="border-top:1px solid var(--border);border-bottom:0"><span class="muted" style="font-size:12px">Provider keys come from <span class="m">env_keys</span> on <span class="m">m1-max</span>. A provider without a key shows no models — it is never silently swapped.</span></div>
+<div class="df"><span class="l"><kbd>↑↓</kbd> move · <kbd>⏎</kbd> choose</span><span class="btn">Cancel</span><span class="btn primary">Use <span class="m">glm-5.3-flash</span> <kbd>⏎</kbd></span></div></div></div><div class="frame-label"><b>D5c — Command palette ⌘K</b> — the needs-you item ranks first whatever you type; approving is <kbd>⌘K</kbd> <kbd>⏎</kbd>.</div><div class="frame"><div class="app"><div class="top"><span class="brand"><span class="mark">π</span>Durable Pi</span><span class="m muted">home-net</span><div class="health"><span class="hd"><i class="st ok"></i><span class="m">m1-max</span></span><span class="hd"><i class="st ok"></i><span class="m">hetzner-cx22</span></span><span class="hd"><i class="st ok"></i><span class="m">mbp-paul</span></span><span class="hd"><i class="st off"></i><span class="m">pi5-garage</span></span><span class="sep"></span><span>7 sessions</span><span class="hd"><i class="st busy"></i>1 running</span></div><span class="spacer"></span><span class="need-chip"><i class="st need"></i><span>1 needs you</span><span class="m">deployer</span><kbd>G N</kbd></span><span class="live"><i class="st ok"></i>live</span><span class="iconbtn">Search or run… <kbd>⌘K</kbd></span><span class="iconbtn">?</span></div><div class="main"><div class="pane side"><div class="pane-head">Network<span class="r m">4 devices</span></div><div class="rows"><div class="row dev"><i class="st busy"></i><span class="lbl"><span class="m">m1-max</span></span><span class="meta"><span class="m">local</span></span></div><div class="row l1"><i class="st busy"></i><span class="lbl">aifund fixture refresh</span><span class="meta"><span class="m">s-7f3a2c</span></span></div><div class="row l2 sel"><i class="st busy"></i><span class="lbl"><span class="m">main</span></span><span class="meta"><span class="sw busy">running 4m</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">reviewer</span></span><span class="meta"><span class="m">idle</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">wiki ingest</span><span class="meta"><span class="m">s-21c90e</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">ingest</span></span><span class="meta"><span class="m">idle 2h</span></span></div><div class="row dev"><i class="st need"></i><span class="lbl"><span class="m">hetzner-cx22</span></span><span class="meta"><span class="m">vps</span></span></div><div class="row l1"><i class="st need"></i><span class="lbl">release 0.4</span><span class="meta"><span class="m">s-9b04d1</span></span></div><div class="row l2 need-row"><i class="st need"></i><span class="lbl"><span class="m">deployer</span></span><span class="meta"><span class="tagchip need"><i class="st need"></i>NEEDS YOU</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">nightly evals</span><span class="meta"><span class="m">s-5e7711</span></span></div><div class="row l2"><i class="st ok"></i><span class="lbl"><span class="m">eval-runner</span></span><span class="meta"><span class="sw ok">✓ 14/14</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">judge</span></span><span class="meta"><span class="m">idle</span></span></div><div class="row dev"><i class="st ok"></i><span class="lbl"><span class="m">mbp-paul</span></span><span class="meta"><span class="m">laptop</span></span></div><div class="row l1"><i class="st idle"></i><span class="lbl">owner-book sync</span><span class="meta"><span class="m">s-3d18aa</span></span></div><div class="row l2"><i class="st idle"></i><span class="lbl"><span class="m">bookkeeper</span></span><span class="meta"><span class="m">idle 1d</span></span></div></div><div class="offline-panel"><div class="h"><i class="st off"></i>Offline · 1</div><div class="d"><span class="m">pi5-garage</span><span class="meta muted" style="margin-left:auto;font-size:11px">seen <span class="m">14:02:11</span></span></div><div class="muted" style="font-size:12px">2 sessions held on device · <u>check now</u></div></div><div class="tree-foot"><span class="btn sm">+ New session <kbd>⌘N</kbd></span><span class="spacer"></span><span class="muted" style="font-size:11px">1 offline folded</span></div></div><div class="pane ctr"><div class="pane-head"><span class="crumb"><span class="m">m1-max</span><span>/</span><span>aifund fixture refresh</span><span>/</span><span class="m cur">main</span></span><span class="r"><span class="sw busy">running · job #14</span></span></div>
+<div class="stream"><div class="item"><span class="t">14:33:40</span><div class="body"><div class="who">you</div><p>Refresh the aifund fixture against today's filings, then rebuild <span class="m">out/</span>. Stop before publishing — I want to approve the diff.</p></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:33:44</span><div class="body"><div class="who"><span class="m">main</span></div><p>Starting job <span class="m">refresh-fixture</span>. Five phases; it checkpoints after <span class="m">analyze</span> and mid-<span class="m">build</span>, so it survives a restart. Phase 4 waits for your approval.</p></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:33:45</span><div class="body"><div class="tool-line"><span class="chev">▸</span><i class="st ok"></i><span class="m">jobs.start</span><span class="args m">{ job: "refresh-fixture" } → run #14</span><span class="dur">120ms</span></div></div><span class="lg">ledger ›</span></div><div class="item wide"><span class="t">14:33:45</span><div class="body"><div class="job"><div class="job-head"><i class="st busy lg pulse"></i><span class="ttl">Refresh aifund fixture</span><span class="m muted">refresh-fixture · #14</span><span class="r"><span class="sw busy">running · 3/5</span><span class="m">4m 51s</span><span>ledger ›</span></span></div>
+<div class="phasebar"><i class="ok"></i><i class="ok"></i><i class="busy"></i><i class=""></i><i class=""></i></div><div class="phase-names"><span class="">1 fetch</span><span class="">2 analyze</span><span class="cur">3 build</span><span class="">4 approve</span><span class="">5 publish</span></div>
+<div class="job-foot"><span>⚑ checkpoint <span class="m">#2</span> · <span class="m">14:39:58</span></span><span>·</span><span class="m">npm run build</span><span class="m muted">44s</span><span class="spacer"></span><span>owner <span class="m">main</span></span></div></div></div></div><div class="item"><span class="t">14:36:10</span><div class="body"><div class="tool-line"><span class="chev">▾</span><i class="st ok"></i><span class="m">read_file</span><span class="args m">{ path: "out/narrative.json", limit: 400 }</span><span class="dur">8ms</span></div><pre class="codebox"><span class="cm">// call</span>
+{ path: "out/narrative.json", limit: 400 }
+<span class="cm">// signature</span>
+read_file(params: {
+  path: string;     <span class="cm">// relative to the session cwd</span>
+  offset?: number;  <span class="cm">// first line, 1-based</span>
+  limit?: number;   <span class="cm">// max lines</span>
+}): string</pre></div><span class="lg">ledger ›</span></div><div class="item"><span class="t">14:41:51</span><div class="body"><div class="who"><span class="m">main</span><span class="sw busy">streaming</span></div><p>Analyze found 3 new filings and one restated figure — Q3 revenue for <span class="m">ACME-HOLD</span>, <span class="m">412.0 → 409.6</span>. I wrote them into <span class="m">match-graph.json</span>; the build is regenerating <span class="m">out/index.html</span> now. Next, the approval gate will show the full diff before anything is published<span class="cursor"></span></p></div><span class="lg">ledger ›</span></div></div><div class="composer"><div class="box"><span class="cph">Message <span class="m">main</span> — <span class="m">/</span> for commands; queued while it works</span>
+<div class="bar"><span class="m">glm-5.3-flash</span><span>·</span><span>follow-up after current step</span><span class="spacer"></span><kbd>⌘⏎</kbd><span class="btn sm">Send</span></div></div></div></div><div class="pane side"><div class="sess-sum"><div class="t1"><i class="st busy"></i><span class="nm">aifund fixture refresh</span><span class="m muted" style="margin-left:auto">s-7f3a2c</span></div>
+<div class="ctx"><div class="bar"><i style="width:32%"></i></div><div class="lbls"><span>context <span class="m">41.2k</span> / <span class="m">128k</span></span><span class="m">32%</span></div></div></div><div class="tabs"><span class="tab">Session</span><span class="tab on">State</span><span class="tab">Tasks</span><span class="tab">Tools</span><span class="tab">Extend</span></div><div class="insp-body"><div class="grp-lbl">App State <span class="r m">demo.fixture · v14</span></div>
+<div class="field"><span class="k">targetBranch</span><span class="input">fixture/2026-11-09</span></div>
+<div class="field"><span class="k">maxRetries</span><span class="stepper"><span class="input">2</span><span>−</span><span>+</span></span></div>
+<div class="field"><span class="k">dryRun</span><span class="toggle"></span></div>
+<div class="field"><span class="k">publishOnApprove</span><span class="toggle on"></span></div>
+<div class="field"><span class="k">sources</span><span class="input">sec-edgar, ir-pages</span></div>
+<div class="field" style="align-items:start"><span class="k">thresholds ▾</span><div class="nest">
+<div class="field"><span class="k">restateDelta</span><span class="input focus">0.5<span class="faint" style="margin-left:auto">%</span></span></div>
+<div class="field"><span class="k">minFilings</span><span class="stepper"><span class="input">1</span><span>−</span><span>+</span></span></div></div></div>
+<div class="muted" style="font-size:12px">Edits apply at once and show here before the device confirms. <span class="m">restateDelta</span>: saving… </div>
+<div class="grp-lbl">Session</div>
+<div class="kv"><span class="k">device</span><span class="v m">m1-max</span><span class="k">cwd</span><span class="v m">~/dpi-work/aifund-fixture</span><span class="k">model</span><span class="v m">ollama/glm-5.3-flash</span><span class="k">agents</span><span class="v">2 · <span class="m">main</span>, <span class="m">reviewer</span></span><span class="k">created</span><span class="v m">2026-11-09 14:33:21</span></div></div></div></div></div><div class="scrim"></div><div class="pal"><div class="q"><span class="muted">›</span><span class="cursor" style="width:1px"></span><span class="muted">Type a command, agent, job or session…</span><span class="spacer"></span><kbd>Esc</kbd></div>
+<div class="grp"><div class="gl">Needs you · 1</div>
+<div class="pi sel"><i class="st need"></i><span>Approve <span class="m">release #7</span> — publish <span class="m">dpi-sdk@0.4.2</span></span><span class="r"><span class="m">deployer</span> · 3m<kbd>⏎</kbd></span></div></div>
+<div class="grp"><div class="gl">Go to</div>
+<div class="pi"><i class="st idle"></i><span>release 0.4</span><span class="r"><span class="m">hetzner-cx22 / s-9b04d1</span></span></div>
+<div class="pi"><i class="st idle"></i><span class="m">reviewer</span><span class="r"><span class="m">m1-max / aifund fixture refresh</span></span></div>
+<div class="pi"><i class="st busy"></i><span>Job <span class="m">refresh-fixture #14</span></span><span class="r"><span class="sw busy">running 4m</span></span></div></div>
+<div class="grp"><div class="gl">Actions</div>
+<div class="pi"><span class="muted" style="width:8px">+</span><span>New session</span><span class="r"><kbd>⌘N</kbd></span></div>
+<div class="pi"><span class="muted" style="width:8px">↻</span><span>Retry device check — <span class="m">pi5-garage</span></span><span class="r"><kbd>⌘R</kbd></span></div>
+<div class="pi"><span class="muted" style="width:8px">⇣</span><span>Compact context of <span class="m">main</span></span><span class="r"><span class="m">/compact</span></span></div>
+<div class="pi"><span class="muted" style="width:8px">⌥</span><span>Reset session…</span><span class="r"><span class="m">/reset</span></span></div></div>
+<div class="foot"><span><kbd>↑↓</kbd> move</span><span><kbd>⏎</kbd> run</span><span><kbd>Tab</kbd> filter: all · agents · jobs · actions</span><span class="spacer"></span><span>Needs-you items always rank first</span></div></div></div>
+</body></html>
