@@ -22,6 +22,7 @@ import PromptDialog from "./components/PromptDialog.vue";
 import ModelPicker from "./components/ModelPicker.vue";
 import {
   attempt,
+  backgroundBusy,
   boot,
   busy,
   device,
@@ -77,7 +78,7 @@ function keydown(e: KeyboardEvent) {
     ui.dialog = undefined;
     return;
   }
-  if (!e.repeat && !e.isComposing && busy.value) {
+  if (!e.repeat && !e.isComposing && (busy.value || backgroundBusy.value)) {
     e.preventDefault();
     void interrupt();
   }

@@ -8,6 +8,7 @@ import {
   agentHandle,
   agentState,
   attempt,
+  backgroundBusy,
   busy,
   interrupt,
   interrupting,
@@ -166,11 +167,17 @@ function withdraw(id: number) {
         <div class="composer-right">
           <button
             class="interrupt"
-            :disabled="!busy || interrupting"
-            title="Stop foreground work and owned subagents (Escape). Background jobs continue."
+            :disabled="(!busy && !backgroundBusy) || interrupting"
+            :title="
+              busy
+                ? 'Stop foreground work and owned subagents (Escape). Background jobs continue.'
+                : 'Only background work is running (Escape). Stop all ends it.'
+            "
             @click="interrupt"
           >
-            <Octagon :size="24" class="stop-sign" fill="currentColor" />Interrupt</button
+            <Octagon :size="24" class="stop-sign" fill="currentColor" />{{
+              busy ? "Interrupt" : "Stop all"
+            }}</button
           ><button
             class="send"
             aria-label="Send message"

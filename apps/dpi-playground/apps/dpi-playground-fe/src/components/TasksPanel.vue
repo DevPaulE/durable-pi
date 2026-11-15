@@ -15,7 +15,7 @@ import {
 import type { TaskNode, TaskOutcome } from "@sdk/api";
 import { jobRunDone } from "@sdk/jobs";
 import { message } from "../client/hub";
-import { agentHandle, sessionHandle, tasks } from "../client/store";
+import { agentHandle, sessionHandle, stopAll as storeStopAll, tasks } from "../client/store";
 import { decide, jobDef, jobDefs, jobRuns, openAgent, pending, revealRun, startJob } from "../client/jobs";
 
 const error = ref("");
@@ -80,11 +80,12 @@ const phaseOf = (t: TaskNode) => {
 };
 
 async function stopAll() {
-  if (stopping.value || !agentHandle.value) return;
+  if (stopping.value) return;
   stopping.value = true;
   error.value = "";
   try {
-    await agentHandle.value.abort(true);
+    // One implementation: the composer's Stop all and this button must not drift apart.
+    await storeStopAll();
   } catch (e) {
     error.value = message(e);
   } finally {

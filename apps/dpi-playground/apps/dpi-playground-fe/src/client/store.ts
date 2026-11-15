@@ -210,6 +210,13 @@ export const busy = computed(
     agentState.value.running ||
     tasks.value.some((t) => !t.effectiveBackground && t.conversationId === selected.value?.agentId),
 );
+/**
+ * Background work for this agent and its owned subagents. `busy` ignores these on purpose, so
+ * anything that gates a stop control on `busy` alone is dead while a background job runs.
+ */
+export const backgroundBusy = computed(
+  () => tasks.value.some((t) => t.effectiveBackground && t.conversationId === selected.value?.agentId),
+);
 export const usage = computed(() => sumUsage(agentState.value.usage));
 export const currentModel = computed(() => {
   const m = agentState.value.agent.model;
@@ -307,9 +314,33 @@ export function ago(ms?: number) {
 // ------------------------------------------------------------------ shared agent commands
 
 export const interrupting = ref(false);
-/** Escape and the Interrupt button: stop foreground work and owned subagents; background jobs continue. */
+
+/** Stop all: foreground work, owned subagents, and the background jobs Interrupt leaves running. */
+export async function stopAll() {
+  if (interrupting.value || !agentHandle.value) return;
+  interrupting.value = true;
+  const done = await attempt(() => agentHandle.value!.abort(true));
+  if (done) notify("Stopped everything, including background work.");
+  interrupting.value = false;
+}
+
+/**
+ * Escape and the Interrupt button.
+ *
+ * Foreground work running -> abort(false): background jobs continue, as documented.
+ * Only background work running -> there is no foreground work to interrupt, so it stops all of it.
+ * Nothing running -> returns without a word.
+ *
+ * It must never be a silent no-op. Gating this on `busy` alone made the control disabled and mute
+ * whenever the agent was mid-turn on a background task, which is the shape a fork has: the turn is
+ * live, but the button never responded and never said why.
+ */
 export async function interrupt() {
-  if (!busy.value || interrupting.value || !agentHandle.value) return;
+  if (interrupting.value || !agentHandle.value) return;
+  if (!busy.value) {
+    if (backgroundBusy.value) return stopAll();
+    return;
+  }
   interrupting.value = true;
   const done = await attempt(() => agentHandle.value!.abort(false));
   if (done) notify("Foreground work interrupted. Background jobs continue.");
