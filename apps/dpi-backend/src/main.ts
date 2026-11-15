@@ -15,6 +15,7 @@ const store = await Store.open({
   name: config.name,
   provider: config.provider,
   providers: config.providers,
+  ...(config.ollamaDefaultModel ? { ollamaDefaultModel: config.ollamaDefaultModel } : {}),
 });
 
 const app = express();

@@ -157,13 +157,25 @@ export function modelInfos(providerId: ProviderId, available: readonly LiveModel
   });
 }
 
-/** The model a new session gets when the caller names none. */
-export function defaultModelFor(providerId: ProviderId, available: readonly { id: string }[]): string {
+/**
+ * The model a new session gets when the caller names none.
+ *
+ * `ollamaDefaultModel` is the device's own `OLLAMA_DEFAULT_MODEL`. It exists because
+ * `ollamaDefaultModelId` is an OLLAMA CLOUD id, and `OLLAMA_BASE_URL` is a per-device
+ * declaration: a device pointed at loopback has a different catalog, so its default has to
+ * be declarable too. Absent — or absent from the live catalog — the fail-closed below still
+ * applies, unchanged.
+ */
+export function defaultModelFor(
+  providerId: ProviderId,
+  available: readonly { id: string }[],
+  options: { ollamaDefaultModel?: string } = {},
+): string {
   if (providerId === "faux") return fauxModels[0].id;
   const preferred =
     providerId === "openrouter" ? defaultModelId :
     providerId === "radius" ? "balanced" :
-    providerId === "ollama" ? ollamaDefaultModelId :
+    providerId === "ollama" ? options.ollamaDefaultModel ?? ollamaDefaultModelId :
     available[0]?.id;
   // If the external provider has no auth/model yet, default to the free Faux model, never a
   // guessed or paid model. The user must explicitly choose a remote model from the catalog.

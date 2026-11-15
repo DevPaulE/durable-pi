@@ -94,6 +94,8 @@ export interface StoreOptions {
   provider: ProviderId;
   /** Every provider this device registers. Defaults to `[provider, "faux"]`. */
   providers?: ProviderId[];
+  /** The `ollama` default for this device (OLLAMA_DEFAULT_MODEL); see defaultModelFor(). */
+  ollamaDefaultModel?: string;
 }
 
 /** Agent documents a client may read or stream, by kind. */
@@ -262,9 +264,11 @@ export class Store {
   }
 
   private defaultModel() {
+    const { ollamaDefaultModel } = this.options;
     return defaultModelFor(
       this.options.provider,
       this.modelList.filter((m) => m.provider === this.options.provider),
+      ollamaDefaultModel ? { ollamaDefaultModel } : {},
     );
   }
 

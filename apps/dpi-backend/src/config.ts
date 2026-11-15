@@ -18,6 +18,12 @@ export interface BackendConfig {
   startDirs: string[];
   provider: ProviderId;
   token: string;
+  /**
+   * The `ollama` provider's default model for THIS device (`OLLAMA_DEFAULT_MODEL`). Optional
+   * because it only means anything when the base URL is loopback; unset, the catalog's own
+   * cloud default is tried and the fail-closed in defaultModelFor() applies as before.
+   */
+  ollamaDefaultModel?: string;
 }
 
 const expand = (p: string) => (p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p);
@@ -49,6 +55,7 @@ export function loadConfig(argv = process.argv.slice(2), env = process.env): Bac
     provider,
     providers: parseProviders(env.DPI_PROVIDERS, provider),
     token: env.DPI_TOKEN ?? "",
+    ...(env.OLLAMA_DEFAULT_MODEL?.trim() ? { ollamaDefaultModel: env.OLLAMA_DEFAULT_MODEL.trim() } : {}),
   };
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535)
     throw Error(`Invalid port: ${config.port}`);

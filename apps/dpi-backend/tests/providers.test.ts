@@ -154,3 +154,24 @@ test("defaultModelFor: plan-covered ollama default, else fail closed to Faux", (
   // catalog-order luck (available[0]) — it falls back to the free Faux model.
   assert.equal(defaultModelFor("ollama", [{ id: "qwen3.8" }]), fauxModels[0].id);
 });
+
+// A device whose OLLAMA_BASE_URL is loopback has a different catalog from the cloud, so
+// `glm-5.3-flash` — a CLOUD id — is not in it, and the fail-closed above silently made every
+// new session on such a device a Faux one. OLLAMA_DEFAULT_MODEL is the per-device declaration
+// that closes it; the fail-closed itself is untouched.
+test("defaultModelFor: a device's own ollama default wins, and is still fail-closed", () => {
+  const local = [{ id: "qwen3:30b-a3b" }, { id: "qwen3.8:latest" }];
+  assert.equal(defaultModelFor("ollama", local, { ollamaDefaultModel: "qwen3:30b-a3b" }), "qwen3:30b-a3b");
+  // Declared but not actually pulled: never catalog-order luck, still Faux.
+  assert.equal(defaultModelFor("ollama", local, { ollamaDefaultModel: "not-pulled:latest" }), fauxModels[0].id);
+  // Unset behaves exactly as before — the cloud default still gets tried first.
+  assert.equal(defaultModelFor("ollama", local), fauxModels[0].id);
+  assert.equal(defaultModelFor("ollama", [{ id: ollamaDefaultModelId }]), ollamaDefaultModelId);
+});
+
+test("loadConfig: OLLAMA_DEFAULT_MODEL is read, and absent means absent", () => {
+  const base = { DPI_TOKEN: "x".repeat(40), DPI_HOME: "/tmp/dpi-config-test" };
+  assert.equal(loadConfig([], { ...base }).ollamaDefaultModel, undefined);
+  assert.equal(loadConfig([], { ...base, OLLAMA_DEFAULT_MODEL: "  qwen3:30b-a3b  " }).ollamaDefaultModel, "qwen3:30b-a3b");
+  assert.equal(loadConfig([], { ...base, OLLAMA_DEFAULT_MODEL: "   " }).ollamaDefaultModel, undefined);
+});

@@ -181,4 +181,9 @@ export const curatedModels = [
 // silently start on a top-tier paid model.
 export const defaultModelId = "deepseek/deepseek-v4.1-flash";
 /** The plan-covered default on Ollama Cloud (same model the LifeOS pi session runs). */
+// The OLLAMA CLOUD default. Against a loopback OLLAMA_BASE_URL this id is not in the catalog,
+// which the fail-closed in defaultModelFor() then resolves to Faux — so a device whose base URL
+// is its own `ollama serve` must declare its default in OLLAMA_DEFAULT_MODEL (a per-device
+// declaration, alongside OLLAMA_BASE_URL). Observed 2026-11-14: the M1 Max ran DPI_PROVIDER=ollama
+// with 11 local models and a default of "echo".
 export const ollamaDefaultModelId = "glm-5.3-flash";
