@@ -17,7 +17,14 @@ import { readSse } from "../../dpi-sdk/src/sse.js";
 import { NetworkRegistry } from "../../dpi-sdk/src/node/registry.js";
 import type { MuxFrame, NetworkDevice } from "../../dpi-sdk/src/api.js";
 
-async function bootHub(home: string, networkFile: string, env: Record<string, string>) {
+async function bootHub(
+  home: string,
+  networkFile: string,
+  env: Record<string, string>,
+  // The readiness probe uses /api/network, which the identity gate also guards — so a gated
+  // hub must be probed with a valid identity or it looks dead for the full retry budget.
+  readyHeaders: Record<string, string> = {},
+) {
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   let output = "";
@@ -46,7 +53,7 @@ async function bootHub(home: string, networkFile: string, env: Record<string, st
   child.stderr?.on("data", (x) => (output += x));
   for (let i = 0; i < 100; i++) {
     try {
-      if ((await fetch(`${base}/api/network`)).ok) break;
+      if ((await fetch(`${base}/api/network`, { headers: readyHeaders })).ok) break;
     } catch {}
     await delay(100);
   }
@@ -254,5 +261,68 @@ test("hub: registry from YAML, monitoring, token-injecting proxy, guard, mux, of
     await a.stop();
     await b.stop();
     await t.cleanup();
+  }
+});
+
+// The identity gate, added 2026-11-14 (O1's companion). The hub holds every device token and
+// /api has no auth of its own, so reachability was the authorization. Behind `tailscale serve`
+// the hub can require `Tailscale-User-Login`, which serve injects and overwrites — a peer's
+// forged value never survives (verified by hand against the live hub the same day).
+//
+// Note what this asserts and what it does not. It proves the gate rejects a request with no
+// identity and one with a foreign identity, and that it accepts the configured login
+// case-insensitively. It cannot prove anything about a local process, because a process on
+// this machine can set any header it likes against the loopback bind — which is exactly why
+// the gate is only meaningful together with the loopback bind.
+test("hub: tailnet identity gate rejects what serve would not have vouched for", async () => {
+  const t = await tempStore();
+  const hubHome = join(t.root, "hub-gated");
+  mkdirSync(hubHome, { recursive: true });
+  const networkFile = join(t.root, "dpi-network-gated.yaml");
+  writeFileSync(
+    networkFile,
+    `devices:\n  nobody:\n    kind: url\n    url: http://127.0.0.1:1\n    token_env: UNUSED\n`,
+  );
+  const who = "paul@example.com";
+  const hub = await bootHub(hubHome, networkFile, { DPI_HUB_REQUIRE_LOGIN: who }, {
+    "tailscale-user-login": who,
+  });
+  const { request } = await import("node:http");
+  const get = (headers: Record<string, string> = {}) =>
+    fetch(`${hub.base}/api/network`, { headers }).then((r) => r.status);
+  try {
+    // No identity at all: the shape of a lan peer or a browser typing the IP.
+    assert.equal(await get(), 403, "no identity rejected");
+    // A foreign identity: another tailnet user, or a shared node.
+    assert.equal(
+      await get({ "tailscale-user-login": "mallory@evil.example" }),
+      403,
+      "foreign identity rejected",
+    );
+    // The configured login, as serve would present it. Case-insensitive on purpose — the
+    // header is a login string, not a token, and Tailscale does not promise its casing.
+    assert.equal(await get({ "tailscale-user-login": who }), 200, "configured identity accepted");
+    assert.equal(
+      await get({ "tailscale-user-login": who.toUpperCase() }),
+      200,
+      "configured identity accepted regardless of case",
+    );
+    // The gate sits behind the Host check, not in front of it: a bad Host is still 421.
+    const u = new URL(`${hub.base}/api/network`);
+    const evil = await new Promise<number>((done) => {
+      request(
+        {
+          host: u.hostname,
+          port: u.port,
+          path: u.pathname,
+          headers: { host: "evil.test", "tailscale-user-login": who },
+        },
+        (r) => (r.resume(), done(r.statusCode ?? 0)),
+      ).end();
+    });
+    assert.equal(evil, 421, "Host check still fires even with a valid identity");
+    assert.match(hub.output(), /identity: \/api requires tailnet login/, "posture is logged");
+  } finally {
+    await hub.stop();
   }
 });

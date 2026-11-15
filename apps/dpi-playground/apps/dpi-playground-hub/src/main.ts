@@ -55,6 +55,12 @@ for (const entry of (process.env.DPI_HUB_ALLOWED_HOSTS ?? "").split(",")) {
   if (name) allowedHosts.add(name.includes(":") ? name : `${name}:${port}`);
 }
 
+// Optional tailnet identity gate. Set `DPI_HUB_REQUIRE_LOGIN` to the tailnet login that must
+// reach this hub (e.g. `you@example.com`) and every /api request must arrive with a matching
+// `Tailscale-User-Login`, which only `tailscale serve` can be trusted to inject. Unset means
+// no gate, which is the pre-2026-11-14 behaviour. See guard.ts for the honest limits.
+const requiredLogin = process.env.DPI_HUB_REQUIRE_LOGIN?.trim().toLowerCase() || undefined;
+
 const err = (code: string, message: string) => ({ error: { code, message } });
 type Handler = (req: express.Request, res: express.Response) => unknown;
 const safe =
@@ -73,7 +79,7 @@ const safe =
 
 const app = express();
 app.disable("x-powered-by");
-app.use("/api", guard(allowedHosts), express.json({ limit: "256kb" }));
+app.use("/api", guard(allowedHosts, requiredLogin), express.json({ limit: "256kb" }));
 
 app.get("/api/network", (_req, res) => res.json({ configFile, devices: monitor.network() }));
 // Devices are configured in dpi-network.yaml and `just net register`; the hub only reads them.
@@ -137,6 +143,11 @@ server.listen(port, host, () => {
     console.warn(
       `WARNING: the hub is listening on ${host}. Anyone who can reach it can drive every device it holds tokens for.`,
     );
+  console.log(
+    requiredLogin
+      ? `identity: /api requires tailnet login ${requiredLogin} (via tailscale serve)`
+      : `identity: none — /api answers any client that can reach ${host}:${port}`,
+  );
 });
 
 let closing = false;
