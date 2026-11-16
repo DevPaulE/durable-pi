@@ -14,16 +14,29 @@ export async function until(fn: () => Promise<boolean>, timeout = 15000, what = 
 }
 export const faux = { provider: "faux", modelId: "echo" };
 
+/** Provider credentials a temp store must NOT inherit from the machine running the tests.
+ *  providers.ts reads these from process.env, so a developer or a CI host that exports a real key
+ *  silently changes what a "no credential" test measures: with OPENROUTER_API_KEY set, the remote
+ *  catalog is no longer empty and providers.test.ts:143 fails on the very machine that can chat. */
+const AMBIENT_PROVIDER_KEYS = ["OPENROUTER_API_KEY", "RADIUS_API_KEY"] as const;
+
 export async function tempStore() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "dpi-be-")));
   await mkdir(join(root, "work", "project", "nested"), { recursive: true });
   const options = { dataDir: join(root, "data"), startDirs: [join(root, "work")], name: "test", provider: "faux" as const };
+  // Hermetic: clear the ambient credentials for the life of this store, and put them back on
+  // cleanup so one test cannot leak its environment into the next.
+  const ambient = AMBIENT_PROVIDER_KEYS.map((key) => [key, process.env[key]] as const);
+  for (const key of AMBIENT_PROVIDER_KEYS) delete process.env[key];
   return {
     root,
     work: join(root, "work"),
     options,
     open: () => Store.open(options),
-    cleanup: () => rm(root, { recursive: true, force: true }),
+    cleanup: async () => {
+      for (const [key, value] of ambient) if (value !== undefined) process.env[key] = value;
+      await rm(root, { recursive: true, force: true });
+    },
   };
 }
 
