@@ -214,28 +214,38 @@ export function findPassage(text: string, query: string, options?: { context?: n
   const lines = text.split("\n");
   // The haystack normalises the same way as the needle, and keeps a map back to real line numbers,
   // so a match that spans a wrap reports the line it started on.
-  const flat: { text: string; line: number }[] = [];
+  //
+  // The map is built from the SAME string that is searched, in the same pass. It used to be built
+  // from the joined lines while the search ran on a whitespace-collapsed copy of them, so every
+  // internal run of whitespace before a match shifted the reported line earlier — 26,252 characters
+  // of drift on designing-ai-agents-v3, which cited line 13531 for text on line 14165, and printed
+  // an unrelated passage as the match (VERIFY-G2.md). Collapsing each line and joining with one
+  // space is identical to joining and then collapsing, and it makes the offsets exact.
+  const flat: { text: string; line: number; start: number }[] = [];
+  const hay: string[] = [];
+  let offset = 0;
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i].trim();
-    if (t) flat.push({ text: t, line: i + 1 });
+    if (!t) continue;
+    if (hay.length) offset += 1; // the single space that joins two lines
+    flat.push({ text: t, line: i + 1, start: offset });
+    const collapsed = t.replace(/\s+/g, " ").toLowerCase();
+    hay.push(collapsed);
+    offset += collapsed.length;
   }
-  const haystack = flat.map((l) => l.text).join(" ").replace(/\s+/g, " ").toLowerCase();
+  const haystack = hay.join(" ");
 
   const found: Passage[] = [];
   let at = haystack.indexOf(needle);
   while (at !== -1 && found.length < max) {
-    // Which flat line does this offset land on?
-    let acc = 0;
-    let line = flat.length ? flat[0].line : 1;
-    for (const entry of flat) {
-      const end = acc + entry.text.length + 1;
-      if (at < end) {
-        line = entry.line;
-        break;
-      }
-      acc = end;
+    // Which flat line does this offset land on? The last line that starts at or before it.
+    let index = 0;
+    for (let i = 0; i < flat.length; i++) {
+      if (flat[i]!.start > at) break;
+      index = i;
     }
-    const first = Math.max(0, flat.findIndex((e) => e.line === line) - context);
+    const line = flat.length ? flat[index]!.line : 1;
+    const first = Math.max(0, index - context);
     const slice = flat
       .slice(first, first + 1 + context * 2)
       .map((e) => e.text)

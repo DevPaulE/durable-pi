@@ -196,6 +196,28 @@ test("findPassage reports the real line and finds nothing for absent text", () =
   assert.deepEqual(findPassage(check.text, "   "), []);
 });
 
+test("findPassage maps a match past internal whitespace to its real line, not an earlier one", () => {
+  // The defect G7 fixed: the offset->line map was built from the joined lines while the search ran
+  // on a whitespace-collapsed copy of them, so every internal run of whitespace before a match
+  // shifted the reported line earlier. On designing-ai-agents-v3 that accumulated to 26,252
+  // characters, and a §8.4 query was cited as line 13531 while the text sits on line 14165 — with
+  // an unrelated passage printed as the match. Synthetic and hermetic: no extract needed.
+  const lines: string[] = [];
+  for (let i = 0; i < 400; i++) lines.push(i % 3 === 0 ? `line ${i + 1} has  a double space` : `line ${i + 1}\thas a tab`);
+  lines[349] = "8.4 Pattern: Adversarial Review"; // line 350
+  const text = lines.join("\n");
+
+  const hit = findPassage(text, "8.4 Pattern: Adversarial Review");
+  assert.equal(hit.length, 1);
+  assert.equal(hit[0].line, 350, `reported line ${hit[0].line}; the text is on line 350`);
+  assert.match(hit[0].text, /8\.4 Pattern: Adversarial Review/);
+
+  // A match that exists only across a line wrap still reports the line it starts on.
+  const wrapped = findPassage(text, "has a double space 8.4 Pattern");
+  assert.equal(wrapped.length, 1);
+  assert.equal(wrapped[0].line, 349, `reported line ${wrapped[0].line}; the match starts on line 349`);
+});
+
 // ---------------------------------------------------------------------------- verifying
 
 test("book_verify confirms a real quotation with its location", async () => {
