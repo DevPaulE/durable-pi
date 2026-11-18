@@ -1,5 +1,6 @@
 import type { SharedState } from "./shared-state.js";
-import { Type } from "@earendil-works/pi-ai";
+// pi-ai 1.5.2 dropped its Type re-export; typebox is the same builder.
+import { Type } from "typebox";
 import { isAbsolute, resolve } from "node:path";
 import { readState, type AppState } from "../../dpi-sdk/src/app-state.js";
 import type { SessionSummary, ThinkingLevel } from "../../dpi-sdk/src/api.js";

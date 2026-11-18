@@ -1,6 +1,11 @@
 // Source: https://agenticengineer.com/model-stack, retrieved 2026-10-05.
 // Active S+, S, A and B models, matched to https://openrouter.ai/api/v1/models.
 // Gemini 4 Argon is rolling out and has no OpenRouter listing at this snapshot.
+//
+// 2026-11-18: moonshotai/kimi-k3.1-pro replaces moonshotai/kimi-k3. K3.1 Pro is in the live
+// OpenRouter catalog and in pi's model store; nothing was running on K3 when it was dropped
+// (checked every session and agent on this device). Its tier is carried from the K3 row and is
+// a vendor label, not a measurement — see ~/dpi-work/team/bench/MODEL-LIST-REVIEW-2026-11-18.md.
 export const curatedModels = [
   {
     id: "anthropic/claude-opus-5.5",
@@ -81,8 +86,8 @@ export const curatedModels = [
     icon: "zai.png",
   },
   {
-    id: "moonshotai/kimi-k3",
-    name: "Kimi K3",
+    id: "moonshotai/kimi-k3.1-pro",
+    name: "Kimi K3.1 Pro",
     tier: "A",
     icon: "kimi.png",
   },

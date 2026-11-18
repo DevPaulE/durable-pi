@@ -10,7 +10,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { defineDoc, defineExtension, defineTool, hook, section, ToolTask, type Extension } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+// pi-ai re-exported Typebox's Type until 1.5.2 dropped it; pi-ai 1.5.2 is what carries
+// kimi-k3.1-pro, so the import comes from typebox directly now.
+import { Type } from "typebox";
 import type { HarnessExtensionInfo } from "../../dpi-sdk/src/api.js";
 import { askJev, type JevAnswer, type JevQuestion } from "./jev.js";
 import { damageReport, findPassage, getBook, loadRegister, readExtract, registerPath, type Book } from "./canon.js";
