@@ -59,6 +59,30 @@ const SLUG_RE = /^[a-z0-9-]{1,64}$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const RECORD_NAMES = new Set(["log.jsonl", "state.json", "refused.jsonl"]);
 
+/**
+ * A ledger line is a note, not a document. A 20 MB line is a page of noise in a record the desk
+ * renders as JSON and rebuilds into every view, so one line is capped at the same 256 KiB the desk
+ * already refuses on its own request body (`express.json({ limit: "256kb" })` in main.ts). Refused
+ * like any other bad line: to `refused.jsonl`, reason and size, never the text (§1b.2, amendment A).
+ */
+export const MAX_TEXT_BYTES = 256 * 1024;
+
+/**
+ * Characters that carry no text at all: zero-width space, word joiner, zero-width no-break
+ * space (BOM), soft hyphen. Removed before a line is compared, so a line that only differs by one
+ * of them is recognised as the same line. ZWNJ/ZWJ (U+200C/200D) are deliberately kept: they are
+ * meaningful in some scripts and in emoji sequences, so dropping them could swallow a real
+ * difference between two lines.
+ */
+const INVISIBLE_RE = /[\u00AD\u200B\u2060\uFEFF]/g;
+
+/**
+ * How a line is compared for duplication: NFC (so an accent written as one code point or two is the
+ * same line), no invisible characters, no surrounding whitespace. It is a comparison key only — the
+ * text is stored exactly as given (trimmed), so the record keeps the bytes the writer sent.
+ */
+const canonicalText = (s: unknown): string => String(s ?? "").normalize("NFC").replace(INVISIBLE_RE, "").trim();
+
 const sha256 = (s: string) => createHash("sha256").update(s).digest("hex");
 const nowIso = () => new Date().toISOString();
 const todayIso = () => nowIso().slice(0, 10);
@@ -346,11 +370,16 @@ function readRecord(dir: string): { lines: Line[]; unreadable: string | null; na
 const factsOf = (lines: Line[], kind: string) =>
   lines.filter((l) => (l.kind ?? "note") === kind).map((l) => ({ date: l.date, source: l.source, text: l.text }));
 
-/** Two lines are the same ledger line when everything but the acceptance time matches. */
+/**
+ * Two lines are the same ledger line when everything but the acceptance time matches, and their text
+ * and source match after canonicalisation. Byte-exactness was the defect: a trailing space, an
+ * NFC-vs-NFD accent and a zero-width space each appended a second copy of one line. A genuinely
+ * different line (a different word, a different case) still compares different.
+ */
 const sameLine = (a: Line, b: Line): boolean =>
   a.date === b.date &&
-  a.source === b.source &&
-  String(a.text ?? "").trim() === String(b.text ?? "").trim() &&
+  canonicalText(a.source) === canonicalText(b.source) &&
+  canonicalText(a.text) === canonicalText(b.text) &&
   (a.kind ?? "note") === (b.kind ?? "note") &&
   (a.capture ?? null) === (b.capture ?? null) &&
   (a.image_path ?? null) === (b.image_path ?? null);
@@ -460,6 +489,9 @@ function rebuildAll(root: string, today: string, windowDays = 14): Summary[] {
 
 /** Validation only; returns the refusal reason or null. Kept separate so a capture can fail before it writes. */
 function validateLine(line: Line, today: string): string | null {
+  const raw = String(line.text ?? "");
+  if (Buffer.byteLength(raw, "utf8") > MAX_TEXT_BYTES) return "text too long";
+  if (!canonicalText(raw)) return "empty text";
   if (!line.date || !isRealDate(line.date)) return "invalid date";
   if (line.date > today) return "date after today";
   const source = line.source;

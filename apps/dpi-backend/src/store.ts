@@ -537,6 +537,13 @@ export class Store {
       // Custom extensions are installed but not selected: an agent turns them on in its own selection.
       const addons = createAddons({ offline: this.options.provider === "faux" });
       for (const extension of addons.list) registry.install(extension);
+      // A desk conversation is one on a backend running as the desk — the one whose data root
+      // `DESK_ROOT` names, the same variable the desk add-on itself reads. There, the ledger writer
+      // and its guard are SELECTED by default, so a fresh desk agent has `ledger_add` and the
+      // `beforeTool` filter is live without a human step (A3 F2/F2b). Everywhere else the desk
+      // add-on stays installed-and-unselected, as before. Reversible: unset DESK_ROOT.
+      const deskConversation = !!process.env.DESK_ROOT?.trim();
+      const defaultExtensions = deskConversation ? [CodingTools, playground, addons.all.desk] : [CodingTools, playground];
       const harness = await Harness.open(
         await openNodeSqliteStorage(row.dbPath),
         {
@@ -548,7 +555,7 @@ export class Store {
             await tx.doc(JobRuns, c.id);
           },
           settings: {
-            extensions: [CodingTools, playground],
+            extensions: defaultExtensions,
             // Read at every use, so a PATCH .../compaction applies from the next request.
             get compaction() {
               return compaction();
