@@ -24,6 +24,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   renameSync,
@@ -52,7 +53,7 @@ export type Line = {
   name?: string;
 };
 export type AddOpts = { root: string; slug: string; name?: string; today?: string };
-export type Result = { ok: true } | { ok: false; reason: string };
+export type Result = { ok: true; appended?: boolean } | { ok: false; reason: string };
 
 const KINDS = ["decision", "open", "follow_up", "note"];
 const SLUG_RE = /^[a-z0-9-]{1,64}$/;
@@ -144,6 +145,22 @@ function atomicWrite(path: string, data: string): void {
     closeSync(fd);
   }
   renameSync(tmp, path);
+}
+/** Does the file end in a newline (an empty or absent file counts as terminated)? */
+function endsWithNewline(p: string): boolean {
+  let fd: number | undefined;
+  try {
+    const st = statSync(p);
+    if (st.size === 0) return true;
+    fd = openSync(p, "r");
+    const b = Buffer.alloc(1);
+    readSync(fd, b, 0, 1, st.size - 1);
+    return b[0] === 0x0a;
+  } catch {
+    return true;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -242,6 +259,12 @@ function inspectLock(lock: string): Verdict | null {
  */
 function stealStaleLock(lock: string, v: Verdict): boolean {
   const tomb = `${lock}.stale-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  // The verdict was made about one directory at one moment. Re-check *immediately* before the
+  // rename: still the same inode, and its owner still not a live process. Otherwise the directory
+  // we are about to move may be a lock another writer has just taken.
+  if (devIno(lock) !== v.ino) return false;
+  const now = readOwner(lock);
+  if (now && now.host === HOST && pidAlive(now.pid)) return false;
   try {
     renameSync(lock, tomb);
   } catch {
@@ -267,7 +290,7 @@ function stealStaleLock(lock: string, v: Verdict): boolean {
   return false;
 }
 /** A single exclusive lock per project, held across the read-modify-write (across processes too). */
-function acquire(lock: string): void {
+function acquire(lock: string): number {
   const started = Date.now();
   for (;;) {
     try {
@@ -283,24 +306,31 @@ function acquire(lock: string): void {
     const mine = devIno(lock);
     try {
       atomicWrite(join(lock, "owner"), JSON.stringify({ pid: process.pid, host: HOST, at: nowIso() }) + "\n");
-      return;
+      return mine;
     } catch (e) {
       // The owner write failed. If the directory is still the one we made, it is ours to clean up;
       // if it is gone or replaced, we never held the lock and must not touch whatever is there now.
-      if (devIno(lock) === mine) release(lock);
+      if (devIno(lock) === mine) release(lock, mine);
       else continue;
       throw e;
     }
   }
 }
-const release = (lock: string) => {
+/**
+ * Release *our* lock and only our lock. The retry loop must stop as soon as the directory at the
+ * lock path is no longer the one this process created: a `force` remove would otherwise delete the
+ * next holder's fresh lock, and two writers would be inside the read-modify-write at once.
+ */
+const release = (lock: string, mine: number) => {
+  if (!mine) return;
   for (let i = 0; i < 50; i++) {
+    if (devIno(lock) !== mine) return; // gone, or someone else's lock is here now — never touch it
     try {
       rmSync(lock, { recursive: true, force: true });
     } catch {
       /* retry */
     }
-    if (!existsSync(lock)) return;
+    if (devIno(lock) !== mine) return;
     sleep(1);
   }
 };
@@ -520,7 +550,8 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
 
   const refuse = (reason: string): ApplyResult => {
     mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "refused.jsonl"), JSON.stringify({ at: nowIso(), reason, chars: text.length, sha256: sha256(text) }) + "\n");
+    const rp = join(dir, "refused.jsonl");
+    appendFileSync(rp, (endsWithNewline(rp) ? "" : "\n") + JSON.stringify({ at: nowIso(), reason, chars: text.length, sha256: sha256(text) }) + "\n");
     return { ok: false, reason };
   };
 
@@ -531,16 +562,21 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
 
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, ".lock");
-  acquire(lock);
+  const mine = acquire(lock);
   try {
     const rec = readRecord(dir);
     if (rec.unreadable) throw new Error(`desk: ${rec.unreadable}`);
     if (rec.tornAt !== undefined) truncateSync(logPath(dir), rec.tornAt);
     const already = rec.lines.some((l) => sameLine(l, { ...line, text, kind }));
     if (!already) {
+      // A complete JSON row with no trailing newline is a valid record, not a torn one. Terminate it
+      // with exactly one `\n` before appending, or the new row would be glued onto the old one and
+      // the whole ledger would become unreadable. No other byte is touched.
+      const lp = logPath(dir);
       appendFileSync(
-        logPath(dir),
-        JSON.stringify({
+        lp,
+        (endsWithNewline(lp) ? "" : "\n") +
+          JSON.stringify({
           date: line.date,
           source,
           text,
@@ -557,14 +593,14 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
     rebuildAll(root, today);
     return { ok: true, appended: !already };
   } finally {
-    release(lock);
+    release(lock, mine);
   }
 }
 
 /** `ledger_add`: the only writer of the ledger. */
 export function ledgerAdd(line: Line, opts: AddOpts): Result {
   const r = apply(line, opts);
-  return r.ok ? { ok: true } : r;
+  return r.ok ? { ok: true, appended: r.appended } : r;
 }
 
 /** Capture text: one ledger line carrying `capture:"text"`; the inbox item is rebuilt from it. */
@@ -606,13 +642,19 @@ export function recordRun(run: RunInput, opts: { root: string; slug: string }): 
   const dir = pdir(opts.root, opts.slug);
   mkdirSync(dir, { recursive: true });
   const p = join(dir, "runs.json");
-  const doc = readJson<{ runs: RunInput[] }>(p, { runs: [] });
-  if (!Array.isArray(doc.runs)) doc.runs = [];
-  const row = { ...run, egress: run.egress ?? [] };
-  const i = doc.runs.findIndex((r) => r.run === run.run);
-  if (i >= 0) doc.runs[i] = row;
-  else doc.runs.push(row);
-  atomicWrite(p, JSON.stringify(doc));
+  const lock = join(dir, ".lock");
+  const mine = acquire(lock);
+  try {
+    const doc = readJson<{ runs: RunInput[] }>(p, { runs: [] });
+    if (!Array.isArray(doc.runs)) doc.runs = [];
+    const row = { ...run, egress: run.egress ?? [] };
+    const i = doc.runs.findIndex((r) => r.run === run.run);
+    if (i >= 0) doc.runs[i] = row;
+    else doc.runs.push(row);
+    atomicWrite(p, JSON.stringify(doc));
+  } finally {
+    release(lock, mine);
+  }
 }
 
 function projectDirs(root: string): string[] {
