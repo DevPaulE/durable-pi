@@ -1,1 +1,29 @@
-{"project":"garden-shed","revision":7,"updated_at":"2026-03-15T07:30:00-07:00","last_touch":"2026-02-27","decisions":[{"date":"2026-02-14","source":"in-app capture 2026-02-14","text":"Move the shed pad two feet east."}],"open_items":[{"date":"2026-02-26","source":"call, transcribed","text":"Order the new pad formwork."}],"follow_ups":[{"date":"2026-02-27","source":"image, inbox/2026-02-27-01.png","text":"Ask the builder about the drain."}]}
+{
+ "project": "Garden shed",
+ "slug": "garden-shed",
+ "revision": 3,
+ "updated_at": "2026-11-19T01:41:07.838Z",
+ "last_touch": "2026-02-27",
+ "decisions": [
+  {
+   "date": "2026-02-14",
+   "source": "in-app capture 2026-02-14",
+   "text": "Move the shed pad two feet east."
+  }
+ ],
+ "open_items": [
+  {
+   "date": "2026-02-26",
+   "source": "call transcript 2026-02-26",
+   "text": "Order the new pad formwork."
+  }
+ ],
+ "follow_ups": [
+  {
+   "date": "2026-02-27",
+   "source": "inbox image 2026-02-27",
+   "text": "Ask the builder about the drain."
+  }
+ ],
+ "needs": 2
+}

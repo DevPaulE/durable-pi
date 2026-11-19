@@ -1,7 +1,7 @@
-// The desk shell (SPEC cos-app v1.1 §13a, option B). Two local servers, both loopback:
+// The desk shell (SPEC cos-app v1.2 §13a, option B). Two local servers, both loopback:
 //
-//   * this shell serves the front end (`web/`) and the desk data root, so the browser can read the
-//     ledger files directly as data;
+//   * this shell serves the front end (`web/`) and the desk data root through `serveRequest`, so the
+//     browser reads the ledger files directly as data, confined to the two roots;
 //   * it proxies `/v1/*` to the desk's own backend on 127.0.0.1:4790, holding the device token
 //     here so the browser never does.
 //
@@ -10,9 +10,10 @@
 // token if there is none, and never prints it.
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { extname, join, normalize, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { serveRequest } from "./static.js";
 
 const DPI_HOME = process.env.DPI_HOME ?? join(homedir(), ".dpi-desk");
 const DESK_ROOT = resolve(process.env.DESK_ROOT ?? join(homedir(), "Desk"));
@@ -34,31 +35,6 @@ function deviceToken(): string {
   mkdirSync(DPI_HOME, { recursive: true, mode: 0o700 });
   writeFileSync(envFile, `DPI_TOKEN=${token}\n`, { mode: 0o600 });
   return token;
-}
-
-const CONTENT_TYPES: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "text/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".jsonl": "text/plain; charset=utf-8",
-  ".png": "image/png",
-  ".txt": "text/plain; charset=utf-8",
-};
-
-/** Serve one file if it is inside `base` and exists; otherwise 404. */
-function serveFile(res: ServerResponse, base: string, rel: string): void {
-  const target = resolve(base, normalize(rel).replace(/^(\.\.(\/|\\|$))+/, ""));
-  if (target !== base && !target.startsWith(base + "/")) {
-    res.writeHead(403).end("forbidden");
-    return;
-  }
-  if (!existsSync(target) || !statSync(target).isFile()) {
-    res.writeHead(404, { "content-type": "text/plain" }).end("not found");
-    return;
-  }
-  res.writeHead(200, { "content-type": CONTENT_TYPES[extname(target)] ?? "application/octet-stream" });
-  res.end(readFileSync(target));
 }
 
 /** Forward `/v1/*` to the desk backend, injecting the device token server-side. */
@@ -86,15 +62,7 @@ const server = createServer((req, res) => {
     proxy(req, res, token);
     return;
   }
-  if (url.pathname === "/desk" || url.pathname.startsWith("/desk/")) {
-    serveFile(res, DESK_ROOT, url.pathname.slice("/desk/".length));
-    return;
-  }
-  if (url.pathname === "/" || url.pathname === "/index.html") {
-    serveFile(res, WEB_DIR, "index.html");
-    return;
-  }
-  serveFile(res, WEB_DIR, url.pathname);
+  serveRequest(res, url.pathname, { webDir: WEB_DIR, deskRoot: DESK_ROOT });
 });
 
 server.listen(SHELL_PORT, "127.0.0.1", () => {

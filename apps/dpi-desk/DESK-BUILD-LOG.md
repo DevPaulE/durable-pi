@@ -57,3 +57,26 @@ processes were stopped; 4790 and 4791 are free; `~/Desk` was not created.
 
 `npm ci` was run once, inside `apps/dpi-backend` in the clone. Nothing global; nothing on the M6; no
 App State write; `~/.dpi`, 4780 and 4781 were not started, stopped or restarted.
+
+## Fix round (red team + spec v1.2)
+
+Applied after Paul's rulings. Every gate is GREEN: round 1 (G1, G2, G3, G7, G9, G10, G11, G12, G13,
+G33) and round 2 (G14–G32), 29 of 29.
+
+- **Declared inputs moved out of the served root.** `input.jsonl` and the source image now live in
+  `fixtures/desk-inputs/`. Nothing of them remains under `fixtures/desk/`, and the shell neither
+  serves them by path, traversal nor a symlink planted inside the data root (G31, G32).
+- **The refusal seed is a plain `ledger_add` with no source** — no caption workaround. The refused
+  text is never written; the refusal appends `{at,reason,chars,sha256}` to `refused.jsonl`
+  (`reason:"missing source"`, `chars:43`, `sha256:35200e1b…`), never the ledger, never a view.
+- **Sources are the ones spec v1.2 Appendix B gives each line**: `in-app capture 2026-02-14`,
+  `call transcript 2026-02-26`, `inbox image 2026-02-27`, `in-app capture 2026-03-14` (G13, G33).
+- **Fixture regenerated from the code**, from `fixtures/desk-inputs/input.jsonl`: byte-for-byte
+  apart from the masked timestamps (`at`, `updated_at`, `generated_at`) (G31). Fixed "today" is
+  `2026-03-15`; `garden-shed` last_touch `2026-02-27`, gap 16, needs 2, refused_count 1; `tax-desk`
+  last_touch `2026-03-14`, gap 1, needs 1, refused_count 0 — as Appendix B states.
+- **`fixtures/desk/projects/tax-desk/inbox.json` was removed** because the code writes `inbox.json`
+  only when a project is captured to; `tax-desk` has no capture, and `deriveViews` never invents an
+  inbox. The earlier shipped file was a hand-written artefact of the pre-fix build, not something the
+  code produces, so regenerating correctly means it is gone. `garden-shed` keeps its `inbox.json`
+  and its stored image copy.

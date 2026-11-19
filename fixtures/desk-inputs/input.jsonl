@@ -1,0 +1,6 @@
+{"op":"ledger_add","project":"garden-shed","name":"Garden shed","line":{"date":"2026-02-14","source":"in-app capture 2026-02-14","text":"Move the shed pad two feet east.","kind":"decision"}}
+{"op":"ledger_add","project":"garden-shed","name":"Garden shed","line":{"date":"2026-02-26","source":"call transcript 2026-02-26","text":"Order the new pad formwork.","kind":"open"}}
+{"op":"capture_image","project":"garden-shed","name":"Garden shed","input":{"path":"2026-02-27-01.png","caption":"Ask the builder about the drain.","date":"2026-02-27","source":"inbox image 2026-02-27"}}
+{"op":"ledger_add","project":"garden-shed","name":"Garden shed","line":{"date":"2026-02-27","text":"Decided to move the shed pad two feet east.","kind":"decision"}}
+{"op":"ledger_add","project":"tax-desk","name":"Tax desk","line":{"date":"2026-03-14","source":"in-app capture 2026-03-14","text":"File the Q1 estimate.","kind":"open"}}
+{"op":"derive","today":"2026-03-15"}

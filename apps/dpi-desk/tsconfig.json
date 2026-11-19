@@ -9,5 +9,5 @@
     "types": ["node"],
     "typeRoots": ["../dpi-backend/node_modules/@types"]
   },
-  "include": ["server.ts"]
+  "include": ["server.ts", "static.ts"]
 }
