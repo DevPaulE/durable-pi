@@ -22,3 +22,14 @@ Isolation: backend `4790`, shell `4791`, `DPI_HOME=~/.dpi-desk`, `DESK_ROOT` def
 
 `web/` is a **placeholder**: one plain page that lists the projects and prints each data file. The
 three-pane front end is a later artifact.
+
+## The guard is the second layer, not the wall
+
+The chat agent that talks to this desk runs with a tool filter of `ledger_add` plus read-only tools
+(`read`, `book_lookup`); it has no `bash`, `write` or `edit`. The `beforeTool` hook in
+`apps/dpi-backend/src/desk-addon.ts` is a *second* line of defence for any tool that does reach it:
+it resolves the target through symlinks and compares device+inode with the record files, so a write
+that reaches `log.jsonl`/`state.json` directly — or through a symlink or a hard link to them — is
+refused. The desk still relies on the ledger being the only record: a cache that a hostile or buggy
+tool corrupts is rebuilt from `log.jsonl` on the next call, and an unparseable cache is rendered
+unreadable rather than trusted.

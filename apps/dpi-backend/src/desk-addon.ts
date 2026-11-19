@@ -25,18 +25,31 @@ import {
   openSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { defineExtension, defineTool, hook, ToolTask, type Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 
-export type Line = { date?: string; source?: string; text?: string; kind?: string };
+export type Line = {
+  date?: string;
+  source?: string;
+  text?: string;
+  kind?: string;
+  /** Acceptance time. Ignored by the duplicate check so a retry of the same line is not a second line. */
+  at?: string;
+  /** Set on a capture line, so the inbox item is recoverable from the log line alone. */
+  capture?: "text" | "image";
+  image_path?: string;
+  /** The project's display name; the latest line that carries one wins. */
+  name?: string;
+};
 export type AddOpts = { root: string; slug: string; name?: string; today?: string };
 export type Result = { ok: true } | { ok: false; reason: string };
 
@@ -269,9 +282,178 @@ const release = (lock: string) => {
 
 type ApplyResult = { ok: true; appended: boolean } | { ok: false; reason: string };
 
+const statePath = (dir: string) => join(dir, "state.json");
+const inboxPath = (dir: string) => join(dir, "inbox.json");
+
 /**
- * The one writer. Validates, then under the project lock appends the log line and updates the state
- * together. A replay of an identical line returns the original outcome and writes nothing (§1b.7).
+ * Read the record. `log.jsonl` is the only record; `state.json` is a cache. Its *readability* is the
+ * desk's readability gate (§1b.9): a cache that cannot be parsed means the desk cannot prove the
+ * record is intact, so the project is shown unreadable and nothing is invented from it.
+ */
+function readRecord(dir: string): { lines: Line[]; unreadable: string | null; name: string | null } {
+  const st = statePath(dir);
+  let cached: string | null = null;
+  if (existsSync(st)) {
+    try {
+      const parsed = JSON.parse(readFileSync(st, "utf8")) as { project?: unknown };
+      cached = typeof parsed?.project === "string" ? parsed.project : null;
+    } catch {
+      return { lines: [], unreadable: "state.json is unreadable", name: null };
+    }
+  }
+  const lp = logPath(dir);
+  if (!existsSync(lp)) {
+    if (existsSync(st)) return { lines: [], unreadable: "log.jsonl is missing", name: cached };
+    return { lines: [], unreadable: null, name: cached };
+  }
+  const lines: Line[] = [];
+  for (const row of readFileSync(lp, "utf8").split("\n")) {
+    if (!row.trim()) continue;
+    try {
+      const l = JSON.parse(row) as Line;
+      if (!l || typeof l !== "object" || Array.isArray(l)) throw new Error("not a line");
+      lines.push(l);
+    } catch {
+      return { lines: [], unreadable: "log.jsonl is unreadable", name: cached };
+    }
+  }
+  // The name lives in the log too, so the record alone rebuilds it; the cache is only a fallback.
+  const named = lines.filter((l) => typeof l.name === "string" && l.name.trim()).pop();
+  return { lines, unreadable: null, name: named?.name ?? cached };
+}
+
+const factsOf = (lines: Line[], kind: string) =>
+  lines.filter((l) => (l.kind ?? "note") === kind).map((l) => ({ date: l.date, source: l.source, text: l.text }));
+
+/** Two lines are the same ledger line when everything but the acceptance time matches. */
+const sameLine = (a: Line, b: Line): boolean =>
+  a.date === b.date &&
+  a.source === b.source &&
+  String(a.text ?? "").trim() === String(b.text ?? "").trim() &&
+  (a.kind ?? "note") === (b.kind ?? "note") &&
+  (a.capture ?? null) === (b.capture ?? null) &&
+  (a.image_path ?? null) === (b.image_path ?? null);
+
+export type Summary = { slug: string; name: string; readable: boolean; last_touch?: string; needs?: number; refused_count: number };
+
+/**
+ * Rebuild one project's caches from its log. No fact is ever read out of a cache: the facts come from
+ * `log.jsonl`, so a wrong or stale cache cannot reach a page. An unreadable cache/record yields an
+ * unreadable page with no numbers in it.
+ */
+function rebuildProject(root: string, slug: string, today: string): Summary {
+  const dir = pdir(root, slug);
+  mkdirSync(join(dir, "views"), { recursive: true });
+  const rec = readRecord(dir);
+  const refused = refusalCount(dir);
+  if (rec.unreadable) {
+    atomicWrite(join(dir, "views", "where-we-left-off.json"), JSON.stringify({ project: slug, slug, unreadable: true, refused_count: refused }));
+    return { slug, name: slug, readable: false, refused_count: refused };
+  }
+  const lines = rec.lines;
+  const name = rec.name ?? slug;
+  const decisions = factsOf(lines, "decision");
+  const open = factsOf(lines, "open");
+  const follow = factsOf(lines, "follow_up");
+  const last = maxDate(lines);
+  const needs = open.length + follow.length;
+
+  atomicWrite(
+    statePath(dir),
+    JSON.stringify(
+      { project: name, slug, revision: lines.length, updated_at: nowIso(), ...(last ? { last_touch: last } : {}), decisions, open_items: open, follow_ups: follow, needs },
+      null,
+      1,
+    ),
+  );
+
+  // A capture's inbox item is recovered from its log line alone: `capture` marks it, `at` time-stamps it,
+  // `image_path` names the stored image. No separate inbox write is needed or trusted.
+  const items = lines
+    .filter((l) => l.capture)
+    .map((l) => ({ at: l.at ?? "", kind: l.capture === "image" ? "image" : "text", source: l.source, text: l.text, ...(l.image_path ? { image_path: l.image_path } : {}) }));
+  if (items.length || existsSync(inboxPath(dir))) atomicWrite(inboxPath(dir), JSON.stringify({ items }));
+
+  const runs = readJson<{ runs: RunInput[] }>(join(dir, "runs.json"), { runs: [] }).runs ?? [];
+  atomicWrite(join(dir, "views", "receipts.json"), JSON.stringify({ runs: runs.map((r) => ({ run: r.run, outcome: r.outcome, at: r.at, ms: r.ms, tokens: r.tokens, cost: r.cost, stepped_in: r.stepped_in })) }));
+  const rows: Record<string, unknown>[] = [];
+  let noneRows = 0;
+  for (const r of runs) {
+    const eg = Array.isArray(r.egress) ? r.egress : [];
+    if (eg.length) for (const e of eg) rows.push({ run: r.run, at: e.at, what: e.what, where: e.to, bytes: e.bytes, why: "egress during run" });
+    else {
+      noneRows += 1;
+      rows.push({ run: r.run, at: r.at, what: "nothing", where: "—", why: "this run made no outbound call" });
+    }
+  }
+  atomicWrite(join(dir, "views", "egress.json"), JSON.stringify({ rows, none_rows: noneRows }));
+
+  atomicWrite(
+    join(dir, "views", "where-we-left-off.json"),
+    JSON.stringify({
+      project: name,
+      slug,
+      ...(last ? { gap_days: Math.max(0, Math.round((Date.parse(today) - Date.parse(last)) / 86_400_000)) } : {}),
+      ...(last ? { last_touch: last } : {}),
+      needs,
+      refused_count: refused,
+      decisions,
+      open_items: open,
+      follow_ups: follow,
+    }),
+  );
+  return { slug, name, readable: true, ...(last ? { last_touch: last } : {}), needs, refused_count: refused };
+}
+
+/** Rebuild every cache in the desk from the logs, then the nav index and the brief. */
+function rebuildAll(root: string, today: string, windowDays = 14): Summary[] {
+  const floor = addDays(today, -windowDays);
+  const summaries: Summary[] = projectDirs(root).map((s) => rebuildProject(root, s, today));
+  const projects = summaries.map((s) =>
+    s.readable
+      ? { slug: s.slug, name: s.name, ...(s.last_touch ? { last_touch: s.last_touch } : {}), needs: s.needs ?? 0, refused_count: s.refused_count, readable: true }
+      : { slug: s.slug, name: s.name, unreadable: true, refused_count: s.refused_count },
+  );
+  mkdirSync(root, { recursive: true });
+  atomicWrite(join(root, "projects.json"), JSON.stringify({ projects, today }));
+
+  const lines: Record<string, unknown>[] = [];
+  const goneQuiet: Record<string, unknown>[] = [];
+  let refused = 0;
+  for (const s of summaries) {
+    if (!s.readable) continue;
+    refused += s.refused_count;
+    const last = s.last_touch ?? today;
+    for (const l of readRecord(pdir(root, s.slug)).lines) {
+      if ((l.kind === "open" || l.kind === "follow_up") && l.date && l.source && l.text && l.date >= floor && l.date <= today)
+        lines.push({ project: s.slug, date: l.date, source: l.source, text: l.text, kind: l.kind });
+    }
+    if ((s.needs ?? 0) > 0 && last < floor) goneQuiet.push({ slug: s.slug, name: s.name, last_touch: last, quiet_days: Math.round((Date.parse(today) - Date.parse(last)) / 86_400_000), needs: s.needs });
+  }
+  lines.sort((a, b) => (String(b.date) + b.project).localeCompare(String(a.date) + a.project));
+  goneQuiet.sort((a, b) => String(b.quiet_days).localeCompare(String(a.quiet_days)));
+  mkdirSync(join(root, "views"), { recursive: true });
+  atomicWrite(join(root, "views", "brief.json"), JSON.stringify({ window_days: windowDays, generated_at: nowIso(), lines, gone_quiet: goneQuiet, refused_count: refused }));
+  return summaries;
+}
+
+/** Validation only; returns the refusal reason or null. Kept separate so a capture can fail before it writes. */
+function validateLine(line: Line, today: string): string | null {
+  if (!line.date || !isRealDate(line.date)) return "invalid date";
+  if (line.date > today) return "date after today";
+  const source = line.source;
+  if (typeof source !== "string" || !source.trim()) return "missing source";
+  const sdates = sourceDates(source);
+  if (!sdates.length) return "source names no date";
+  if (line.date < sdates.sort()[0]) return "date precedes source";
+  if (!KINDS.includes(line.kind ?? "note")) return "invalid kind";
+  return null;
+}
+
+/**
+ * The one writer. Validates, then under the project lock appends the log line (unless an identical
+ * line is already there) and rebuilds every cache from the log — a duplicate retry included, so a
+ * retry after a crash reconciles the caches instead of leaving them stale.
  */
 function apply(line: Line, opts: AddOpts): ApplyResult {
   const root = opts.root;
@@ -289,60 +471,37 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
     return { ok: false, reason };
   };
 
-  // §1b.1: a real calendar date, never after today.
-  if (!line.date || !isRealDate(line.date)) return refuse("invalid date");
-  if (line.date > today) return refuse("date after today");
-  // §1b.2: a source, non-blank, naming a date; and not backdated.
-  const source = line.source;
-  if (typeof source !== "string" || !source.trim()) return refuse("missing source");
-  const sdates = sourceDates(source);
-  if (!sdates.length) return refuse("source names no date");
-  if (line.date < sdates.sort()[0]) return refuse("date precedes source");
-  // §1b.3: kind in the enum.
+  const bad = validateLine({ ...line, text }, today);
+  if (bad) return refuse(bad);
   const kind = line.kind ?? "note";
-  if (!KINDS.includes(kind)) return refuse("invalid kind");
+  const source = String(line.source).trim();
 
   mkdirSync(dir, { recursive: true });
   const lock = join(dir, ".lock");
   acquire(lock);
   try {
-    const stPath = join(dir, "state.json");
-    let state: Record<string, unknown> | null = null;
-    if (existsSync(stPath)) {
-      try {
-        state = JSON.parse(readFileSync(stPath, "utf8"));
-      } catch {
-        // §1b.9 / F3: an unreadable record accepts nothing, and never a partial log line.
-        throw new Error("desk: state.json is unreadable");
-      }
+    const rec = readRecord(dir);
+    if (rec.unreadable) throw new Error(`desk: ${rec.unreadable}`);
+    const already = rec.lines.some((l) => sameLine(l, { ...line, text, kind }));
+    if (!already) {
+      appendFileSync(
+        logPath(dir),
+        JSON.stringify({
+          date: line.date,
+          source,
+          text,
+          kind,
+          at: nowIso(),
+          ...(line.capture ? { capture: line.capture } : {}),
+          ...(line.image_path ? { image_path: line.image_path } : {}),
+          ...(opts.name ? { name: opts.name } : {}),
+        }) + "\n",
+      );
     }
-    const existing = logLines(dir);
-    const already = existing.some((l) => l.date === line.date && l.source === source && l.text === text && (l.kind ?? "note") === kind);
-    if (already) return { ok: true, appended: false };
-
-    appendFileSync(logPath(dir), JSON.stringify({ date: line.date, source, text, kind }) + "\n");
-    const st = state ?? { project: opts.name ?? slug, slug, revision: 0, updated_at: "", last_touch: "", decisions: [], open_items: [], follow_ups: [] };
-    if (opts.name) st.project = opts.name;
-    if (!st.slug) st.slug = slug;
-    // state.json is an *index of the log*, recomputed from it rather than accumulated: the log is the
-    // record and holds nothing but appended lines, so no interleaving can drop a fact. `revision` is
-    // the record's length, which is what makes a replay leave it unchanged.
-    const lines = logLines(dir);
-    const facts = (k: string) => lines.filter((l) => (l.kind ?? "note") === k).map((l) => ({ date: l.date, source: l.source, text: l.text }));
-    const open = facts("open");
-    const followUps = facts("follow_up");
-    st.decisions = facts("decision");
-    st.open_items = open;
-    st.follow_ups = followUps;
-    st.revision = lines.length;
-    st.updated_at = nowIso();
-    st.last_touch = maxDate(lines);
-    st.needs = open.length + followUps.length;
-    atomicWrite(stPath, JSON.stringify(st, null, 1));
-    // Every project keeps a (possibly empty) refused log, so a refusal has somewhere to land.
     const rp = join(dir, "refused.jsonl");
     if (!existsSync(rp)) atomicWrite(rp, "");
-    return { ok: true, appended: true };
+    rebuildAll(root, today);
+    return { ok: true, appended: !already };
   } finally {
     release(lock);
   }
@@ -354,45 +513,27 @@ export function ledgerAdd(line: Line, opts: AddOpts): Result {
   return r.ok ? { ok: true } : r;
 }
 
-function addInboxItem(dir: string, item: Record<string, unknown>): void {
-  const p = join(dir, "inbox.json");
-  const doc = readJson<{ items: unknown[] }>(p, { items: [] });
-  if (!Array.isArray(doc.items)) doc.items = [];
-  doc.items.push(item);
-  atomicWrite(p, JSON.stringify(doc));
-}
-
-/** Capture text: one ledger line and one inbox item (§6, ruling 11). */
+/** Capture text: one ledger line carrying `capture:"text"`; the inbox item is rebuilt from it. */
 export function captureText(input: { text?: string; date?: string; source?: string; kind?: string }, opts: AddOpts): Result {
-  const r = apply({ date: input.date, source: input.source, text: input.text, kind: input.kind ?? "note" }, opts);
-  if (!r.ok) return r;
-  if (r.appended) addInboxItem(pdir(opts.root, opts.slug), { at: nowIso(), kind: "text", source: input.source, text: String(input.text ?? "").trim() });
-  return { ok: true };
+  const r = apply({ date: input.date, source: input.source, text: input.text, kind: input.kind ?? "note", capture: "text" }, opts);
+  return r.ok ? { ok: true } : r;
 }
 
-/** Capture an image given by file path with a caption: the image is copied in and referenced by path (§6, ruling 11). */
+/** Capture an image given by path: the image is stored first (an orphan is harmless), then the log line. */
 export function captureImage(input: { path?: string; caption?: string; date?: string; source?: string; kind?: string }, opts: AddOpts): Result {
   if (!input.path || !existsSync(input.path)) return { ok: false, reason: "image not found" };
-  const r = apply({ date: input.date, source: input.source, text: input.caption, kind: input.kind ?? "follow_up" }, opts);
-  if (!r.ok) return r;
-  if (r.appended) {
-    const dir = pdir(opts.root, opts.slug);
-    mkdirSync(join(dir, "inbox"), { recursive: true });
-    // Two captures can share a file name; each must keep its own bytes. On a collision the stored
-    // name takes the content's own short hash, so no capture overwrites or shadows another.
-    const bytes = readFileSync(input.path);
-    const name = basename(input.path);
-    let stored = join(dir, "inbox", name);
-    if (existsSync(stored) && !readFileSync(stored).equals(bytes)) {
-      const dot = name.lastIndexOf(".");
-      const stem = dot > 0 ? name.slice(0, dot) : name;
-      const ext = dot > 0 ? name.slice(dot) : "";
-      stored = join(dir, "inbox", `${stem}-${createHash("sha256").update(bytes).digest("hex").slice(0, 8)}${ext}`);
-    }
-    copyFileSync(input.path, stored);
-    addInboxItem(dir, { at: nowIso(), kind: "image", source: input.source, text: String(input.caption ?? "").trim(), image_path: `inbox/${basename(stored)}` });
-  }
-  return { ok: true };
+  const today = opts.today ?? todayIso();
+  const bad = validateLine({ date: input.date, source: input.source, text: input.caption, kind: input.kind ?? "follow_up" }, today);
+  if (bad) return { ok: false, reason: bad };
+  const dir = pdir(opts.root, opts.slug);
+  mkdirSync(join(dir, "inbox"), { recursive: true });
+  const bytes = readFileSync(input.path);
+  const ext = extname(input.path);
+  let target = join(dir, "inbox", basename(input.path));
+  if (existsSync(target) && !readFileSync(target).equals(bytes)) target = join(dir, "inbox", `${basename(input.path, ext)}-${sha256(bytes.toString("latin1")).slice(0, 8)}${ext}`);
+  if (!existsSync(target)) copyFileSync(input.path, target);
+  const r = apply({ date: input.date, source: input.source, text: input.caption, kind: input.kind ?? "follow_up", capture: "image", image_path: `inbox/${basename(target)}` }, opts);
+  return r.ok ? { ok: true } : r;
 }
 
 export type RunInput = {
@@ -420,122 +561,73 @@ export function recordRun(run: RunInput, opts: { root: string; slug: string }): 
   atomicWrite(p, JSON.stringify(doc));
 }
 
-const readable = (dir: string): boolean => {
-  const p = join(dir, "state.json");
-  if (!existsSync(p)) return false;
-  try {
-    JSON.parse(readFileSync(p, "utf8"));
-    return true;
-  } catch {
-    return false;
-  }
-};
-
 function projectDirs(root: string): string[] {
   const base = join(root, "projects");
   if (!existsSync(base)) return [];
   return readdirSync(base)
     .filter((e) => {
       const d = join(base, e);
-      return statSync(d).isDirectory() && (existsSync(join(d, "state.json")) || existsSync(join(d, "log.jsonl")));
+      try {
+        return statSync(d).isDirectory() && (existsSync(join(d, "state.json")) || existsSync(join(d, "log.jsonl")));
+      } catch {
+        return false;
+      }
     })
     .sort();
 }
 
-/**
- * Derive the pages from the record (§1b.3): where-we-left-off, receipts, egress for the project,
- * and projects.json + brief.json across projects. An unreadable record is shown unreadable (§1b.9).
- */
+/** Derive the pages from the record: every cache is rebuilt from the logs, then the views are written. */
 export function deriveViews(root: string, slug: string, opts: { today?: string; windowDays?: number } = {}): void {
-  const today = opts.today ?? todayIso();
-  const windowDays = opts.windowDays ?? 14;
-  const floor = addDays(today, -windowDays);
-  const dirs = projectDirs(root);
-  for (const s of dirs) deriveProject(root, s, today);
-  const dir = pdir(root, slug);
-  if (!existsSync(dir)) return;
-
-  const readableDirs = dirs.filter((s) => readable(pdir(root, s)));
-  const projects = dirs.map((s) => {
-    const d = pdir(root, s);
-    if (!readable(d)) return { slug: s, name: readJson<Record<string, unknown>>(join(d, "state.json"), {}).project ?? s, unreadable: true, needs: 0, refused_count: refusalCount(d) };
-    const st = readJson<Record<string, unknown>>(join(d, "state.json"), {});
-    const last = maxDate(logLines(d)) ?? (typeof st.last_touch === "string" ? st.last_touch : undefined);
-    return {
-      slug: s,
-      name: typeof st.project === "string" ? st.project : s,
-      last_touch: last,
-      needs: (Array.isArray(st.open_items) ? st.open_items.length : 0) + (Array.isArray(st.follow_ups) ? st.follow_ups.length : 0),
-      refused_count: refusalCount(d),
-      readable: true,
-    };
-  });
-  mkdirSync(root, { recursive: true });
-  atomicWrite(join(root, "projects.json"), JSON.stringify({ projects, today }));
-
-  const lines: Record<string, unknown>[] = [];
-  const goneQuiet: Record<string, unknown>[] = [];
-  let refused = 0;
-  for (const s of readableDirs) {
-    const d = pdir(root, s);
-    const st = readJson<Record<string, unknown>>(join(d, "state.json"), {});
-    refused += refusalCount(d);
-    const last = maxDate(logLines(d)) ?? (typeof st.last_touch === "string" ? st.last_touch : today);
-    const needs = (Array.isArray(st.open_items) ? st.open_items.length : 0) + (Array.isArray(st.follow_ups) ? st.follow_ups.length : 0);
-    for (const l of logLines(d)) {
-      if ((l.kind === "open" || l.kind === "follow_up") && l.date && l.source && l.text && l.date >= floor && l.date <= today)
-        lines.push({ project: s, date: l.date, source: l.source, text: l.text, kind: l.kind });
-    }
-    if (needs > 0 && last < floor) goneQuiet.push({ slug: s, name: typeof st.project === "string" ? st.project : s, last_touch: last, quiet_days: Math.round((Date.parse(today) - Date.parse(last)) / 86_400_000), needs });
-  }
-  lines.sort((a, b) => (String(b.date) + b.project).localeCompare(String(a.date) + a.project));
-  goneQuiet.sort((a, b) => String(b.quiet_days).localeCompare(String(a.quiet_days)));
-  mkdirSync(join(root, "views"), { recursive: true });
-  atomicWrite(join(root, "views", "brief.json"), JSON.stringify({ window_days: windowDays, generated_at: nowIso(), lines, gone_quiet: goneQuiet, refused_count: refused }));
-}
-
-function deriveProject(root: string, slug: string, today: string): void {
-  const dir = pdir(root, slug);
-  mkdirSync(join(dir, "views"), { recursive: true });
-  if (!readable(dir)) {
-    atomicWrite(join(dir, "views", "where-we-left-off.json"), JSON.stringify({ project: slug, slug, unreadable: true, refused_count: refusalCount(dir) }));
-    return;
-  }
-  const st = readJson<Record<string, unknown>>(join(dir, "state.json"), {});
-  const lines = logLines(dir);
-  const last = maxDate(lines) ?? (typeof st.last_touch === "string" ? st.last_touch : today);
-  const fact = (k: string) => (Array.isArray(st[k]) ? st[k] : []);
-  atomicWrite(
-    join(dir, "views", "where-we-left-off.json"),
-    JSON.stringify({
-      project: typeof st.project === "string" ? st.project : slug,
-      slug,
-      gap_days: Math.round((Date.parse(today) - Date.parse(last)) / 86_400_000),
-      last_touch: last,
-      needs: (st.open_items as unknown[] ?? []).length + (st.follow_ups as unknown[] ?? []).length,
-      refused_count: refusalCount(dir),
-      decisions: fact("decisions"),
-      open_items: fact("open_items"),
-      follow_ups: fact("follow_ups"),
-    }),
-  );
-  const runs = readJson<{ runs: RunInput[] }>(join(dir, "runs.json"), { runs: [] }).runs ?? [];
-  atomicWrite(join(dir, "views", "receipts.json"), JSON.stringify({ runs: runs.map((r) => ({ run: r.run, outcome: r.outcome, at: r.at, ms: r.ms, tokens: r.tokens, cost: r.cost, stepped_in: r.stepped_in })) }));
-  const rows: Record<string, unknown>[] = [];
-  let noneRows = 0;
-  for (const r of runs) {
-    const eg = Array.isArray(r.egress) ? r.egress : [];
-    if (eg.length) for (const e of eg) rows.push({ run: r.run, at: e.at, what: e.what, where: e.to, bytes: e.bytes, why: "egress during run" });
-    else {
-      noneRows += 1;
-      rows.push({ run: r.run, at: r.at, what: "nothing", where: "—", why: "this run made no outbound call" });
-    }
-  }
-  atomicWrite(join(dir, "views", "egress.json"), JSON.stringify({ rows, none_rows: noneRows }));
+  rebuildAll(root, opts.today ?? todayIso(), opts.windowDays ?? 14);
 }
 
 /** §1b.8: deny a tool call whose resolved target is a record file. `write`/`edit`/`bash` cannot reach the ledger. */
 const GUARD_REASON = "the desk's ledger is written only through ledger_add";
+
+/** Resolve a path through symlinks, falling back to its nearest existing ancestor for a missing leaf. */
+function realOrParent(p: string): string {
+  try {
+    return realpathSync(p);
+  } catch {
+    const parent = dirname(p);
+    if (parent === p) return p;
+    return join(realOrParent(parent), basename(p));
+  }
+}
+/**
+ * Does this path resolve to a record file or the lock? A symlink is followed to its target first; a
+ * hard link keeps its own name, so the resolved file is also compared by device+inode with the
+ * record files beside it. A name check alone would let either one through.
+ */
+function isRecordPath(p: string, root: string): boolean {
+  const real = realOrParent(p);
+  const base = basename(real);
+  if (base.startsWith(".lock") || RECORD_NAMES.has(base)) return true;
+  let st: ReturnType<typeof statSync>;
+  try {
+    st = statSync(real);
+  } catch {
+    return false;
+  }
+  const same = (q: string) => {
+    try {
+      const s = statSync(q);
+      return s.dev === st.dev && s.ino === st.ino;
+    } catch {
+      return false;
+    }
+  };
+  // A hard link can live anywhere: compare the resolved file with the records beside it *and* with
+  // every record file in the desk. A file with no other links cannot be one of them.
+  if (st.nlink < 2) return false;
+  for (const n of [...RECORD_NAMES, ".lock"]) if (same(join(dirname(real), n))) return true;
+  const base_dir = join(root, "projects");
+  if (!existsSync(base_dir)) return false;
+  for (const e of readdirSync(base_dir)) {
+    for (const n of [...RECORD_NAMES, ".lock"]) if (same(join(base_dir, e, n))) return true;
+  }
+  return false;
+}
 
 /** Everything under `<root>/projects/`, plus the code-derived pages. Only this add-on writes there. */
 function insideDesk(p: string, root: string): boolean {
@@ -578,7 +670,7 @@ export function guardToolCall(toolName: string, args: Record<string, unknown> | 
     if (!path) return { block: false };
     // The record files and the lock are the add-on's; a note written beside them is nobody's business.
     const target = resolve(root, path);
-    if (RECORD_NAMES.has(basename(target)) || basename(target).startsWith(".lock")) return blocked(GUARD_REASON);
+    if (isRecordPath(target, root)) return blocked(GUARD_REASON);
     return { block: false };
   }
   if (toolName === "bash") {
@@ -586,18 +678,22 @@ export function guardToolCall(toolName: string, args: Record<string, unknown> | 
     if (!cmd.trim()) return { block: false };
     const strip = (w: string) => w.replace(/^['"]|['"]$/g, "");
     const words = cmd.split(/[\s|;&()+<>=]+/).filter(Boolean);
-    const touches = (w: string) => namesRecord(w) || insideDesk(resolve(root, strip(w)), root);
+    const touches = (w: string) => namesRecord(w) || isRecordPath(resolve(root, strip(w)), root) || insideDesk(resolve(root, strip(w)), root);
     // 1. a redirection whose target is a record file or anything inside the desk.
     for (const m of cmd.matchAll(/>>?\s*([^\s&|;>]+)/g)) if (touches(m[1])) return blocked(GUARD_REASON);
     // 2. a command that is not a plain read, aimed at a record file or the desk tree. `cat log.jsonl`
     //    and `cat log.jsonl > /tmp/backup` are reads of the record and are allowed; `cp log out` is a
     //    copy out and is allowed; everything else that reaches inside the desk is a write.
-    const verb = strip(words[0] ?? "").replace(/^.*\//, "");
+    // Every segment of a pipeline or list is checked on its own: `echo x | tee log.jsonl` is a write
+    // even though the first word is a reader.
     const inPlace = /\b(sed|perl|ruby|awk)\b[\s\S]*\s-i/.test(cmd);
-    const plainlyReads = READERS.has(verb) && !inPlace;
-    const namesRecordish = [...RECORD_NAMES].some((n) => cmd.includes(n)) || /\.lock\b/.test(cmd);
-    if (!plainlyReads && (words.some(touches) || namesRecordish || destroys(cmd))) {
-      const dest = strip(words[words.length - 1] ?? "");
+    for (const seg of cmd.split(/[|;&]+|&&|\|\|/).map((x) => x.trim()).filter(Boolean)) {
+      const sw = seg.split(/[\s<>=]+/).filter(Boolean);
+      const verb = strip(sw[0] ?? "").replace(/^.*\//, "");
+      if (READERS.has(verb) && !inPlace) continue;
+      const namesRecordish = [...RECORD_NAMES].some((n) => seg.includes(n)) || /\.lock\b/.test(seg);
+      if (!(sw.some(touches) || namesRecordish || destroys(seg))) continue;
+      const dest = strip(sw[sw.length - 1] ?? "");
       const copiesOut = COPY_OUT.has(verb) && !insideDesk(resolve(root, dest), root) && !namesRecord(dest);
       if (!copiesOut) return blocked(GUARD_REASON);
     }

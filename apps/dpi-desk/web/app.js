@@ -47,7 +47,11 @@ async function main() {
   const list = document.createElement("ul");
   for (const p of index.projects ?? []) {
     const li = document.createElement("li");
-    li.textContent = `${p.name} (${p.slug}) — last touch ${p.last_touch}, needs ${p.needs}, refused ${p.refused_count}`;
+    // An unreadable record is shown as unreadable: it carries no facts, so the page must not print
+    // numbers or "undefined" as if they were what the desk knows.
+    li.textContent = p.unreadable
+      ? `${p.name} (${p.slug}) — unreadable record; refused ${p.refused_count}`
+      : `${p.name} (${p.slug}) — last touch ${p.last_touch ?? "none"}, needs ${p.needs ?? 0}, refused ${p.refused_count}`;
     list.append(li);
   }
   root.append(list);
