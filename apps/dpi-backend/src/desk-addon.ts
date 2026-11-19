@@ -30,10 +30,10 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, hook, ToolTask, type Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 
 export type Line = { date?: string; source?: string; text?: string; kind?: string };
@@ -110,25 +110,160 @@ function atomicWrite(path: string, data: string): void {
 function sleep(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
+
+// ---------------------------------------------------------------- the single-writer lock (§1b.7)
+//
+// A per-project directory `<slug>/.lock`, taken with mkdir (atomic on every filesystem the desk
+// runs on) and held across the whole read-modify-write. A crashed writer must not wedge the project
+// forever, but a *live* writer that is merely slow must never have its lock taken away — that would
+// put two writers on one ledger, which is the one thing §1b.7 exists to prevent.
+//
+// So the discriminator is **liveness, never age**. The holder writes an owner record
+// `{pid, host, at}` inside the lock. A waiter may reclaim the lock only when it can *prove* the
+// owner is gone:
+//   * owner on this host and `kill(pid, 0)` says ESRCH  -> dead    -> reclaim;
+//   * owner on this host and the pid answers (or EPERM) -> alive   -> **keep waiting, however old
+//     the lock is**; slowness is not evidence of death;
+//   * owner names another host -> not provable here -> never reclaim (the desk is one machine);
+//   * no owner at all -> age past a short grace window only, which covers the microseconds between
+//     `mkdir` and the owner write, not a slow writer.
+// Reclaiming is itself atomic: the stale dir is renamed to a unique tombstone, so of N waiters that
+// all decide a lock is stale, exactly one rename wins and the others loop — a reclaim can never
+// delete a lock another writer has just re-taken.
+const HOST = hostname();
+const LOCK_WAIT_MS = 15_000; // how long a waiter honours a live owner before it gives up (it never breaks it)
+const LOCK_GRACE_MS = 5_000; // mkdir -> owner write is microseconds; this only covers a crash in between
+const LOCK_OWNER_FILES = ["owner", "pid", "info"];
+
+type Owner = { pid: number; host: string; at: string };
+/** What a waiter saw, and *which directory* it saw it in — the decision is only good for that inode. */
+type Verdict = { why: "dead-pid" | "no-owner-old"; ino: number };
+
+function lockAgeMs(lock: string): number {
+  try {
+    return Date.now() - statSync(lock).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+function devIno(p: string): number {
+  try {
+    return statSync(p).ino;
+  } catch {
+    return 0;
+  }
+}
+function readOwner(lock: string): Owner | null {
+  for (const n of LOCK_OWNER_FILES) {
+    const p = join(lock, n);
+    if (!existsSync(p)) continue;
+    let raw = "";
+    try {
+      raw = readFileSync(p, "utf8").trim();
+    } catch {
+      continue;
+    }
+    if (!raw) continue;
+    try {
+      const j = JSON.parse(raw) as Partial<Owner>;
+      if (j && typeof j.pid === "number") return { pid: j.pid, host: typeof j.host === "string" ? j.host : HOST, at: String(j.at ?? "") };
+    } catch {
+      /* not JSON: fall through to a bare pid */
+    }
+    const pid = Number.parseInt(raw, 10);
+    if (Number.isInteger(pid)) return { pid, host: HOST, at: "" };
+  }
+  return null;
+}
+/** Does the process named by the lock still exist? Signal 0 asks, it does not deliver. */
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM"; // exists, just not ours
+  }
+}
+/** Inspect a lock: `null` means "not provably dead — leave it alone". */
+function inspectLock(lock: string): Verdict | null {
+  const ino = devIno(lock);
+  if (!ino) return null; // gone already
+  const o = readOwner(lock);
+  if (o) {
+    if (o.host !== HOST) return null; // cannot prove a remote owner dead -> never reclaim
+    return pidAlive(o.pid) ? null : { why: "dead-pid", ino };
+  }
+  return lockAgeMs(lock) > LOCK_GRACE_MS ? { why: "no-owner-old", ino } : null;
+}
+/**
+ * Break a lock we proved dead. The read and the rename are separated in time, so the rename is only
+ * allowed to stand if the directory it moved is *the same directory* the verdict was about, and its
+ * owner is still not a live writer on this host. Otherwise the lock is put back and the waiter keeps
+ * waiting: a reclaim may never take a lock away from a writer that is alive.
+ */
+function stealStaleLock(lock: string, v: Verdict): boolean {
+  const tomb = `${lock}.stale-${process.pid}-${Math.random().toString(36).slice(2)}`;
+  try {
+    renameSync(lock, tomb);
+  } catch {
+    return false; // someone else won the reclaim, or the lock is gone; loop and re-check
+  }
+  const o = readOwner(tomb);
+  const sameDir = devIno(tomb) === v.ino;
+  const stillDead = o ? !(o.host === HOST && pidAlive(o.pid)) : v.why === "dead-pid" ? false : true;
+  if (sameDir && stillDead) {
+    rmSync(tomb, { recursive: true, force: true });
+    return true;
+  }
+  // We moved a lock that is not the dead one we judged (or its owner came back): put it back.
+  for (let i = 0; i < 250; i++) {
+    try {
+      renameSync(tomb, lock);
+      return false;
+    } catch {
+      sleep(2);
+    }
+  }
+  rmSync(tomb, { recursive: true, force: true });
+  return false;
+}
 /** A single exclusive lock per project, held across the read-modify-write (across processes too). */
 function acquire(lock: string): void {
   const started = Date.now();
   for (;;) {
     try {
       mkdirSync(lock);
-      return;
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      if (Date.now() - started > 15_000) throw new Error("desk: lock timeout");
+      const v = inspectLock(lock);
+      if (v && stealStaleLock(lock, v)) continue;
+      if (Date.now() - started > LOCK_WAIT_MS) throw new Error("desk: lock timeout");
       sleep(2);
+      continue;
+    }
+    const mine = devIno(lock);
+    try {
+      atomicWrite(join(lock, "owner"), JSON.stringify({ pid: process.pid, host: HOST, at: nowIso() }) + "\n");
+      return;
+    } catch (e) {
+      // The owner write failed. If the directory is still the one we made, it is ours to clean up;
+      // if it is gone or replaced, we never held the lock and must not touch whatever is there now.
+      if (devIno(lock) === mine) release(lock);
+      else continue;
+      throw e;
     }
   }
 }
 const release = (lock: string) => {
-  try {
-    rmSync(lock, { recursive: true, force: true });
-  } catch {
-    /* best effort */
+  for (let i = 0; i < 50; i++) {
+    try {
+      rmSync(lock, { recursive: true, force: true });
+    } catch {
+      /* retry */
+    }
+    if (!existsSync(lock)) return;
+    sleep(1);
   }
 };
 
@@ -189,14 +324,20 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
     const st = state ?? { project: opts.name ?? slug, slug, revision: 0, updated_at: "", last_touch: "", decisions: [], open_items: [], follow_ups: [] };
     if (opts.name) st.project = opts.name;
     if (!st.slug) st.slug = slug;
-    for (const b of ["decisions", "open_items", "follow_ups"]) if (!Array.isArray(st[b])) st[b] = [];
-    st.revision = (Number(st.revision) || 0) + 1;
-    st.updated_at = nowIso();
-    const bucket = KIND_BUCKET[kind];
-    if (bucket) (st[bucket] as unknown[]).push({ date: line.date, source, text });
+    // state.json is an *index of the log*, recomputed from it rather than accumulated: the log is the
+    // record and holds nothing but appended lines, so no interleaving can drop a fact. `revision` is
+    // the record's length, which is what makes a replay leave it unchanged.
     const lines = logLines(dir);
+    const facts = (k: string) => lines.filter((l) => (l.kind ?? "note") === k).map((l) => ({ date: l.date, source: l.source, text: l.text }));
+    const open = facts("open");
+    const followUps = facts("follow_up");
+    st.decisions = facts("decision");
+    st.open_items = open;
+    st.follow_ups = followUps;
+    st.revision = lines.length;
+    st.updated_at = nowIso();
     st.last_touch = maxDate(lines);
-    st.needs = (st.open_items as unknown[]).length + (st.follow_ups as unknown[]).length;
+    st.needs = open.length + followUps.length;
     atomicWrite(stPath, JSON.stringify(st, null, 1));
     // Every project keeps a (possibly empty) refused log, so a refusal has somewhere to land.
     const rp = join(dir, "refused.jsonl");
@@ -206,12 +347,6 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
     release(lock);
   }
 }
-
-const KIND_BUCKET: Record<string, "decisions" | "open_items" | "follow_ups" | undefined> = {
-  decision: "decisions",
-  open: "open_items",
-  follow_up: "follow_ups",
-};
 
 /** `ledger_add`: the only writer of the ledger. */
 export function ledgerAdd(line: Line, opts: AddOpts): Result {
@@ -243,9 +378,19 @@ export function captureImage(input: { path?: string; caption?: string; date?: st
   if (r.appended) {
     const dir = pdir(opts.root, opts.slug);
     mkdirSync(join(dir, "inbox"), { recursive: true });
+    // Two captures can share a file name; each must keep its own bytes. On a collision the stored
+    // name takes the content's own short hash, so no capture overwrites or shadows another.
+    const bytes = readFileSync(input.path);
     const name = basename(input.path);
-    copyFileSync(input.path, join(dir, "inbox", name));
-    addInboxItem(dir, { at: nowIso(), kind: "image", source: input.source, text: String(input.caption ?? "").trim(), image_path: `inbox/${name}` });
+    let stored = join(dir, "inbox", name);
+    if (existsSync(stored) && !readFileSync(stored).equals(bytes)) {
+      const dot = name.lastIndexOf(".");
+      const stem = dot > 0 ? name.slice(0, dot) : name;
+      const ext = dot > 0 ? name.slice(dot) : "";
+      stored = join(dir, "inbox", `${stem}-${createHash("sha256").update(bytes).digest("hex").slice(0, 8)}${ext}`);
+    }
+    copyFileSync(input.path, stored);
+    addInboxItem(dir, { at: nowIso(), kind: "image", source: input.source, text: String(input.caption ?? "").trim(), image_path: `inbox/${basename(stored)}` });
   }
   return { ok: true };
 }
@@ -390,16 +535,72 @@ function deriveProject(root: string, slug: string, today: string): void {
 }
 
 /** §1b.8: deny a tool call whose resolved target is a record file. `write`/`edit`/`bash` cannot reach the ledger. */
+const GUARD_REASON = "the desk's ledger is written only through ledger_add";
+
+/** Everything under `<root>/projects/`, plus the code-derived pages. Only this add-on writes there. */
+function insideDesk(p: string, root: string): boolean {
+  return (
+    p === join(root, "projects.json") ||
+    p.startsWith(join(root, "projects") + "/") ||
+    p === join(root, "projects") ||
+    p.startsWith(join(root, "views") + "/")
+  );
+}
+/** Could this shell word name (or, with a glob, expand to) a record file or the lock? */
+function namesRecord(word: string): boolean {
+  const base = basename(word.replace(/^['"]|['"]$/g, ""));
+  if (!base) return false;
+  if (base.startsWith(".lock")) return true;
+  const rx = new RegExp("^" + base.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$");
+  return [...RECORD_NAMES].some((n) => rx.test(n));
+}
+/** Commands that only read their file arguments: naming a record file with one of these is not a write. */
+const READERS = new Set([
+  "cat", "head", "tail", "less", "more", "tac", "nl", "wc", "grep", "egrep", "fgrep", "rg", "ls", "find", "stat", "file", "jq", "sort", "uniq", "cut", "tr", "column", "sha256sum", "shasum", "md5", "md5sum", "diff", "tree", "du", "basename", "dirname", "pwd", "date", "echo", "printf", "true", "false", "test", "[", "which", "type", "sed", "awk",
+  // `sed`/`awk` are filters here; an in-place (`-i`) form is handled separately.
+]);
+/** Verbs whose *last* word is a destination, so a copy out of the desk is not a write into it. */
+const COPY_OUT = new Set(["cp", "rsync", "scp"]);
+/** bash commands that destroy a tree outright. */
+function destroys(cmd: string): boolean {
+  return /(^|[\s|;&(])(rm|rmdir|mv|truncate|shred|unlink|dd|chmod|chown)(\s|$)/.test(cmd);
+}
+
+/**
+ * The runtime guard (§1b.8): the ledger's record files are the add-on's to write, never a tool's.
+ * Reads are allowed — `cat log.jsonl` is how a person inspects the desk; only a *write* is blocked.
+ */
 export function guardToolCall(toolName: string, args: Record<string, unknown> | undefined, opts: { root: string }): { block: boolean; reason?: string } {
   const blocked = (reason: string) => ({ block: true, reason });
+  const root = opts.root;
   if (toolName === "write" || toolName === "edit") {
-    const path = String((args?.path as string) ?? "");
-    if (path && RECORD_NAMES.has(basename(resolve(opts.root, path)))) return blocked("record file");
+    const path = String((args?.path as string) ?? (args?.file_path as string) ?? (args?.filePath as string) ?? "");
+    if (!path) return { block: false };
+    // The record files and the lock are the add-on's; a note written beside them is nobody's business.
+    const target = resolve(root, path);
+    if (RECORD_NAMES.has(basename(target)) || basename(target).startsWith(".lock")) return blocked(GUARD_REASON);
     return { block: false };
   }
   if (toolName === "bash") {
     const cmd = String((args?.command as string) ?? "");
-    if ([...RECORD_NAMES].some((n) => cmd.includes(n))) return blocked("command touches a record file");
+    if (!cmd.trim()) return { block: false };
+    const strip = (w: string) => w.replace(/^['"]|['"]$/g, "");
+    const words = cmd.split(/[\s|;&()+<>=]+/).filter(Boolean);
+    const touches = (w: string) => namesRecord(w) || insideDesk(resolve(root, strip(w)), root);
+    // 1. a redirection whose target is a record file or anything inside the desk.
+    for (const m of cmd.matchAll(/>>?\s*([^\s&|;>]+)/g)) if (touches(m[1])) return blocked(GUARD_REASON);
+    // 2. a command that is not a plain read, aimed at a record file or the desk tree. `cat log.jsonl`
+    //    and `cat log.jsonl > /tmp/backup` are reads of the record and are allowed; `cp log out` is a
+    //    copy out and is allowed; everything else that reaches inside the desk is a write.
+    const verb = strip(words[0] ?? "").replace(/^.*\//, "");
+    const inPlace = /\b(sed|perl|ruby|awk)\b[\s\S]*\s-i/.test(cmd);
+    const plainlyReads = READERS.has(verb) && !inPlace;
+    const namesRecordish = [...RECORD_NAMES].some((n) => cmd.includes(n)) || /\.lock\b/.test(cmd);
+    if (!plainlyReads && (words.some(touches) || namesRecordish || destroys(cmd))) {
+      const dest = strip(words[words.length - 1] ?? "");
+      const copiesOut = COPY_OUT.has(verb) && !insideDesk(resolve(root, dest), root) && !namesRecord(dest);
+      if (!copiesOut) return blocked(GUARD_REASON);
+    }
     return { block: false };
   }
   return { block: false };
@@ -431,5 +632,16 @@ const ledgerAddTool = defineTool({
   },
 });
 
-/** The extension `addons.ts` registers; its one tool is `ledger_add`. */
-export const deskAddon: Extension = defineExtension({ name: "desk", tools: [ledgerAddTool] });
+/** The extension `addons.ts` registers: `ledger_add`, plus the guard wired as a `beforeTool` hook. */
+export const deskAddon: Extension = defineExtension({
+  name: "desk",
+  tools: [ledgerAddTool],
+  hooks: [
+    hook(ToolTask, {
+      beforeTool: (call) => {
+        const v = guardToolCall(call.name, call.arguments as Record<string, unknown>, { root: deskRoot() });
+        return v.block ? { block: v.reason ?? GUARD_REASON } : undefined;
+      },
+    }),
+  ],
+});

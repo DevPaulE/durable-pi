@@ -80,3 +80,32 @@ G33) and round 2 (G14–G32), 29 of 29.
   inbox. The earlier shipped file was a hand-written artefact of the pre-fix build, not something the
   code produces, so regenerating correctly means it is gone. `garden-shed` keeps its `inbox.json`
   and its stored image copy.
+
+## Round 3 (the amended suite: G33–G37)
+
+The checker's amendments added G33 (a line's source is the one the spec gives *that* line), G32 (declared
+inputs unreachable through the shell), G34/G35 (the guard must be wired as a `beforeTool` hook, and pass
+its cases through the extension), G36 (stale-lock recovery) and G37 (two captures of one file name must
+each keep their own bytes). All 33 gates are GREEN, four consecutive full runs.
+
+- **The fixture generator now lives in the repo**: `apps/dpi-desk/regen-fixture.ts`, run by G31 as
+  `bun apps/dpi-desk/regen-fixture.ts --inputs fixtures/desk-inputs --out <dir>`. It drives the add-on
+  itself, so the fixture can only be what the code produces; the gate re-runs it twice (repeatability) and
+  once against a mutated input (it must follow its input, not copy the fixture).
+- **The guard is the extension's `beforeTool` hook**, not a bare function: record files and the lock are
+  never written by a tool. Reads are allowed (`cat log.jsonl`, and `cat log.jsonl > /tmp/backup`), a copy
+  out of the desk is allowed, and writes beside the record are allowed — only a write aimed *into* the
+  desk is blocked.
+- **Image capture on a name collision** keeps both: the second capture of a name whose bytes differ is
+  stored under `<stem>-<sha256-8><ext>`, so no capture overwrites or shadows another.
+- **Two robustness fixes found by stress, not by the gate:**
+  1. **The stale-lock reclaim was itself unsafe.** A waiter could read an owner's pid, the owner could
+     finish, and the waiter's later *rename* could then move a lock directory another writer had just
+     created — after which two writers held "the lock". The reclaim now records the directory's inode with
+     its verdict and only keeps the steal if the directory it moved is the same inode *and* its owner is
+     still not a live process; otherwise it puts the lock back and keeps waiting. If the reclaim fails, the
+     owner write re-checks that the directory is still its own and never releases someone else's lock.
+  2. **`state.json` is now an index of the log, recomputed from it** rather than accumulated in place. The
+     log is append-only, so no interleaving — even one the lock failed to prevent — can drop a fact;
+     `revision` is the record's length, which is also why a replay leaves it unchanged. `10 × 12`
+     concurrent writers over 300 seed lines went from ~1 lost update in 5 runs to 0 in 12.
