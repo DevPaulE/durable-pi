@@ -2,7 +2,7 @@
  "project": "Garden shed",
  "slug": "garden-shed",
  "revision": 3,
- "updated_at": "2026-11-19T03:22:44.601Z",
+ "updated_at": "2026-11-19T22:29:52.428Z",
  "last_touch": "2026-02-27",
  "decisions": [
   {
@@ -13,6 +13,7 @@
  ],
  "open_items": [
   {
+   "id": "6142a0bc",
    "date": "2026-02-26",
    "source": "call transcript 2026-02-26",
    "text": "Order the new pad formwork."
@@ -20,6 +21,7 @@
  ],
  "follow_ups": [
   {
+   "id": "119079c3",
    "date": "2026-02-27",
    "source": "inbox image 2026-02-27",
    "text": "Ask the builder about the drain."

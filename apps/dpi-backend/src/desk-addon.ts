@@ -51,6 +51,12 @@ export type Line = {
   image_path?: string;
   /** The project's display name; the latest line that carries one wins. */
   name?: string;
+  /**
+   * §1b.10 closure. The `id` of the open item or follow-up this line closes. A closing line is an
+   * ordinary appended line: it carries its own date and source, and nothing is ever edited or removed.
+   * Absent on every other line, so the kind enum does not change.
+   */
+  closes?: string;
 };
 export type AddOpts = { root: string; slug: string; name?: string; today?: string };
 export type Result = { ok: true; appended?: boolean } | { ok: false; reason: string };
@@ -401,6 +407,49 @@ const factsOf = (lines: Line[], kind: string) =>
   lines.filter((l) => (l.kind ?? "note") === kind).map((l) => ({ date: l.date, source: l.source, text: l.text }));
 
 /**
+ * §1b.10 — a line's stable `id`. It is *derived*, not stored: the same canonical tuple `sameLine` uses
+ * to decide whether two lines are one line. That makes the id and the duplicate rule the same concept,
+ * and it means a line written before this rule existed still has an id — nothing is backfilled and no
+ * ledger is rewritten. `at` is excluded deliberately: a retry after a crash must keep the same id.
+ */
+const idOf = (l: Line): string =>
+  sha256(
+    [
+      l.date ?? "",
+      canonicalText(l.source),
+      canonicalText(l.text),
+      l.kind ?? "note",
+      l.capture ?? "",
+      l.image_path ?? "",
+    ].join("\u0000"),
+  ).slice(0, 8);
+
+/** The ids of open items and follow-ups that some later line closes. */
+const closedIds = (lines: Line[]): Set<string> =>
+  new Set(lines.map((l) => l.closes).filter((c): c is string => typeof c === "string" && c.length > 0));
+
+/** The id of the line that closes `id`, or undefined. */
+const closerOf = (lines: Line[], id: string): Line | undefined => lines.find((l) => l.closes === id);
+
+/** An open item or follow-up, with its derived id and its closure state. */
+const closableFacts = (lines: Line[], kind: string) => {
+  const closed = closedIds(lines);
+  return lines
+    .filter((l) => (l.kind ?? "note") === kind)
+    .map((l) => {
+      const id = idOf(l);
+      const closer = closed.has(id) ? closerOf(lines, id) : undefined;
+      return {
+        id,
+        date: l.date,
+        source: l.source,
+        text: l.text,
+        ...(closer ? { closed: true as const, closed_by: idOf(closer), closed_date: closer.date } : {}),
+      };
+    });
+};
+
+/**
  * Two lines are the same ledger line when everything but the acceptance time matches, and their text
  * and source match after canonicalisation. Byte-exactness was the defect: a trailing space, an
  * NFC-vs-NFD accent and a zero-width space each appended a second copy of one line. A genuinely
@@ -412,7 +461,8 @@ const sameLine = (a: Line, b: Line): boolean =>
   canonicalText(a.text) === canonicalText(b.text) &&
   (a.kind ?? "note") === (b.kind ?? "note") &&
   (a.capture ?? null) === (b.capture ?? null) &&
-  (a.image_path ?? null) === (b.image_path ?? null);
+  (a.image_path ?? null) === (b.image_path ?? null) &&
+  (a.closes ?? null) === (b.closes ?? null);
 
 export type Summary = { slug: string; name: string; readable: boolean; last_touch?: string; needs?: number; refused_count: number };
 
@@ -433,10 +483,11 @@ function rebuildProject(root: string, slug: string, today: string): Summary {
   const lines = rec.lines;
   const name = rec.name ?? slug;
   const decisions = factsOf(lines, "decision");
-  const open = factsOf(lines, "open");
-  const follow = factsOf(lines, "follow_up");
+  const open = closableFacts(lines, "open");
+  const follow = closableFacts(lines, "follow_up");
   const last = maxDate(lines);
-  const needs = open.length + follow.length;
+  // §1b.10: only items with no closing line count as needs. An answered follow-up stops counting.
+  const needs = open.filter((f) => !("closed" in f)).length + follow.filter((f) => !("closed" in f)).length;
 
   atomicWrite(
     statePath(dir),
@@ -506,7 +557,9 @@ function rebuildAll(root: string, today: string, windowDays = 14): Summary[] {
     const last = s.last_touch ?? today;
     for (const l of readRecord(pdir(root, s.slug)).lines) {
       if ((l.kind === "open" || l.kind === "follow_up") && l.date && l.source && l.text && l.date >= floor && l.date <= today)
-        lines.push({ project: s.slug, date: l.date, source: l.source, text: l.text, kind: l.kind });
+        // §1b.10: a closed item is not a need, so it never reaches the brief's "in the window" list.
+        if (!closedIds(readRecord(pdir(root, s.slug)).lines).has(idOf(l)))
+          lines.push({ project: s.slug, date: l.date, source: l.source, text: l.text, kind: l.kind });
     }
     if ((s.needs ?? 0) > 0 && last < floor) goneQuiet.push({ slug: s.slug, name: s.name, last_touch: last, quiet_days: Math.round((Date.parse(today) - Date.parse(last)) / 86_400_000), needs: s.needs });
   }
@@ -567,6 +620,14 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
     const rec = readRecord(dir);
     if (rec.unreadable) throw new Error(`desk: ${rec.unreadable}`);
     if (rec.tornAt !== undefined) truncateSync(logPath(dir), rec.tornAt);
+    // §1b.10: a closing line must name an open item or follow-up that exists. The check needs the log,
+    // so it cannot live in validateLine, which runs before the record is read.
+    if (line.closes !== undefined) {
+      const target = String(line.closes);
+      const closable = rec.lines.some((l) => (l.kind === "open" || l.kind === "follow_up") && idOf(l) === target);
+      if (!closable) return refuse(`dangling close: no open item or follow-up with id ${target}`);
+      if (closedIds(rec.lines).has(target)) return refuse(`already closed: ${target}`);
+    }
     const already = rec.lines.some((l) => sameLine(l, { ...line, text, kind }));
     if (!already) {
       // A complete JSON row with no trailing newline is a valid record, not a torn one. Terminate it
@@ -584,6 +645,7 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
           at: nowIso(),
           ...(line.capture ? { capture: line.capture } : {}),
           ...(line.image_path ? { image_path: line.image_path } : {}),
+          ...(line.closes ? { closes: line.closes } : {}),
           ...(opts.name ? { name: opts.name } : {}),
         }) + "\n",
       );
