@@ -33,7 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { defineExtension, defineTool, hook, ToolTask, type Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
@@ -637,6 +637,7 @@ export function deriveViews(root: string, slug: string, opts: { today?: string; 
 
 /** §1b.8: deny a tool call whose resolved target is a record file. `write`/`edit`/`bash` cannot reach the ledger. */
 const GUARD_REASON = "the desk's ledger is written only through ledger_add";
+const READ_REASON = "a seat may read only what lives under the desk root";
 
 /** Resolve a path through symlinks, falling back to its nearest existing ancestor for a missing leaf. */
 function realOrParent(p: string): string {
@@ -712,13 +713,44 @@ function destroys(cmd: string): boolean {
   return /(^|[\s|;&(])(rm|rmdir|mv|truncate|shred|unlink|dd|chmod|chown)(\s|$)/.test(cmd);
 }
 
+/** The path a call carries: `read`, `write` and `edit` spell it `path`, `file_path` or `filePath`. */
+function pathArg(args: Record<string, unknown> | undefined): unknown {
+  if (!args) return undefined;
+  for (const key of ["path", "file_path", "filePath"]) if (args[key] !== undefined) return args[key];
+  return undefined;
+}
+
 /**
- * The runtime guard (§1b.8): the ledger's record files are the add-on's to write, never a tool's.
- * Reads are allowed — `cat log.jsonl` is how a person inspects the desk; only a *write* is blocked.
+ * The read half of the guard (§1b.8): a seat may read what the desk *holds* — anything that really
+ * lives under the desk root — and nothing else. The path is resolved against the desk root and then
+ * resolved through symlinks, so a symlink that sits inside the desk but points outside it is refused,
+ * and a sibling directory whose name merely starts with the root's name is not inside it. A target
+ * that does not exist is resolved through its nearest existing ancestor, so "it does not exist" is
+ * never mistaken for "it is inside". An empty or non-string path is refused: a call the desk cannot
+ * place is not a call it should allow, and refusing it must not throw.
+ */
+function readConfined(p: unknown, root: string): boolean {
+  if (typeof p !== "string" || !p.trim()) return false;
+  const realRoot = realOrParent(root);
+  const realTarget = realOrParent(resolve(root, p));
+  return realTarget.startsWith(realRoot + sep);
+}
+
+/**
+ * The runtime guard (§1b.8). Three policies, by tool:
+ *   * `read` is confined to the desk root (`readConfined`): the seat reads the desk, not the host.
+ *   * `write`/`edit` may not touch the record files or the lock.
+ *   * `bash` may not write into the desk tree (a plain read of a record file is still allowed).
+ * The hook's default-deny filter sits above this; nothing here is reached for an unknown tool.
  */
 export function guardToolCall(toolName: string, args: Record<string, unknown> | undefined, opts: { root: string }): { block: boolean; reason?: string } {
   const blocked = (reason: string) => ({ block: true, reason });
   const root = opts.root;
+  if (toolName === "read") {
+    // A read the desk cannot confine to its own root is refused, whatever argument spelling it used.
+    if (!readConfined(pathArg(args), root)) return blocked(READ_REASON);
+    return { block: false };
+  }
   if (toolName === "write" || toolName === "edit") {
     const path = String((args?.path as string) ?? (args?.file_path as string) ?? (args?.filePath as string) ?? "");
     if (!path) return { block: false };
