@@ -29,6 +29,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -290,7 +291,7 @@ const inboxPath = (dir: string) => join(dir, "inbox.json");
  * desk's readability gate (§1b.9): a cache that cannot be parsed means the desk cannot prove the
  * record is intact, so the project is shown unreadable and nothing is invented from it.
  */
-function readRecord(dir: string): { lines: Line[]; unreadable: string | null; name: string | null } {
+function readRecord(dir: string): { lines: Line[]; unreadable: string | null; name: string | null; tornAt?: number } {
   const st = statePath(dir);
   let cached: string | null = null;
   if (existsSync(st)) {
@@ -307,7 +308,27 @@ function readRecord(dir: string): { lines: Line[]; unreadable: string | null; na
     return { lines: [], unreadable: null, name: cached };
   }
   const lines: Line[] = [];
-  for (const row of readFileSync(lp, "utf8").split("\n")) {
+  const raw = readFileSync(lp);
+  const text = raw.toString("utf8");
+  const rows = text.split("\n");
+  // A torn final line: the file does not end in a newline and its last row does not parse. It is a
+  // crashed append, not corruption — ignored on read, truncated away before the next add.
+  let tornAt: number | undefined;
+  if (!text.endsWith("\n") && rows[rows.length - 1].trim()) {
+    const last = rows[rows.length - 1];
+    let ok = true;
+    try {
+      const l = JSON.parse(last);
+      if (!l || typeof l !== "object" || Array.isArray(l)) ok = false;
+    } catch {
+      ok = false;
+    }
+    if (!ok) {
+      tornAt = Buffer.byteLength(text.slice(0, text.length - last.length), "utf8");
+      rows.pop();
+    }
+  }
+  for (const row of rows) {
     if (!row.trim()) continue;
     try {
       const l = JSON.parse(row) as Line;
@@ -319,7 +340,7 @@ function readRecord(dir: string): { lines: Line[]; unreadable: string | null; na
   }
   // The name lives in the log too, so the record alone rebuilds it; the cache is only a fallback.
   const named = lines.filter((l) => typeof l.name === "string" && l.name.trim()).pop();
-  return { lines, unreadable: null, name: named?.name ?? cached };
+  return { lines, unreadable: null, name: named?.name ?? cached, tornAt };
 }
 
 const factsOf = (lines: Line[], kind: string) =>
@@ -482,6 +503,7 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
   try {
     const rec = readRecord(dir);
     if (rec.unreadable) throw new Error(`desk: ${rec.unreadable}`);
+    if (rec.tornAt !== undefined) truncateSync(logPath(dir), rec.tornAt);
     const already = rec.lines.some((l) => sameLine(l, { ...line, text, kind }));
     if (!already) {
       appendFileSync(
@@ -702,6 +724,8 @@ export function guardToolCall(toolName: string, args: Record<string, unknown> | 
   return { block: false };
 }
 
+const ALLOWED_TOOLS = new Set(["ledger_add", "read"]);
+
 /** The desk root the tool writes to; the fixture lives inside the clone during development. */
 const deskRoot = () => process.env.DESK_ROOT ?? join(homedir(), "Desk");
 
@@ -735,6 +759,8 @@ export const deskAddon: Extension = defineExtension({
   hooks: [
     hook(ToolTask, {
       beforeTool: (call) => {
+        // Default deny: only the ledger's own writer and plain reads pass; an unknown tool is blocked.
+        if (!ALLOWED_TOOLS.has(call.name)) return { block: GUARD_REASON };
         const v = guardToolCall(call.name, call.arguments as Record<string, unknown>, { root: deskRoot() });
         return v.block ? { block: v.reason ?? GUARD_REASON } : undefined;
       },

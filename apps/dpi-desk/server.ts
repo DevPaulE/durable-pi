@@ -39,14 +39,21 @@ function deviceToken(): string {
 
 /** Forward `/v1/*` to the desk backend, injecting the device token server-side. */
 function proxy(req: IncomingMessage, res: ServerResponse, token: string): void {
-  const upstream = httpRequest(
-    `${BACKEND}${req.url}`,
-    { method: req.method, headers: { ...req.headers, host: "127.0.0.1:4790", "x-dpi-token": token } },
-    (up) => {
-      res.writeHead(up.statusCode ?? 502, up.headers);
-      up.pipe(res);
-    },
-  );
+  let upstream: ReturnType<typeof httpRequest>;
+  try {
+    upstream = httpRequest(
+      `${BACKEND}${req.url}`,
+      { method: req.method, headers: { ...req.headers, host: "127.0.0.1:4790", "x-dpi-token": token } },
+      (up) => {
+        res.writeHead(up.statusCode ?? 502, up.headers);
+        up.pipe(res);
+      },
+    );
+  } catch {
+    res.writeHead(400, { "content-type": "text/plain" });
+    res.end("bad request");
+    return;
+  }
   upstream.on("error", () => {
     if (!res.headersSent) res.writeHead(502, { "content-type": "text/plain" });
     res.end("desk backend unavailable on 127.0.0.1:4790");
@@ -57,13 +64,32 @@ function proxy(req: IncomingMessage, res: ServerResponse, token: string): void {
 const token = deviceToken();
 
 const server = createServer((req, res) => {
-  const url = new URL(req.url ?? "/", `http://127.0.0.1:${SHELL_PORT}`);
+  try {
+    handle(req, res);
+  } catch {
+    if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
+    res.end("internal error");
+  }
+});
+server.on("clientError", (_e, socket) => {
+  if (socket.writable) socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+});
+
+function handle(req: IncomingMessage, res: ServerResponse): void {
+  let url: URL;
+  try {
+    url = new URL(req.url ?? "/", `http://127.0.0.1:${SHELL_PORT}`);
+  } catch {
+    res.writeHead(400, { "content-type": "text/plain" });
+    res.end("bad request");
+    return;
+  }
   if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) {
     proxy(req, res, token);
     return;
   }
   serveRequest(res, url.pathname, { webDir: WEB_DIR, deskRoot: DESK_ROOT });
-});
+}
 
 server.listen(SHELL_PORT, "127.0.0.1", () => {
   console.log(`desk shell on http://127.0.0.1:${SHELL_PORT}`);
