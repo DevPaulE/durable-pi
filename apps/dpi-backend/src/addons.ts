@@ -16,6 +16,7 @@ import { Type } from "typebox";
 import type { HarnessExtensionInfo } from "../../dpi-sdk/src/api.js";
 import { askJev, type JevAnswer, type JevQuestion } from "./jev.js";
 import { damageReport, findPassage, getBook, loadRegister, readExtract, registerPath, type Book } from "./canon.js";
+import { deskAddon } from "./desk-addon.js";
 
 const PROMPTS_DIR = join(import.meta.dirname, "../prompts");
 
@@ -362,6 +363,7 @@ export const ADDON_INFO: Omit<HarnessExtensionInfo, "enabled" | "prompts">[] = [
     description:
       "Adds the authoritative books, their editions and the rules for citing them to this agent's system prompt, plus `book_lookup` and `book_verify`. Both tools read only extracts whose hash matches the canon register and answer CANNOT VERIFY FROM SOURCE otherwise. The register is DevPaulE/agent-patterns/canon/canon.yaml; move it with BOOK_CANON_REGISTER.",
   },
+  { name: "desk", title: "Desk ledger", description: "The per-project ledger: `ledger_add` is the only writer of log.jsonl and state.json, and the code that derives the desk's pages from them." },
 ];
 
 export function createAddons(opts: { offline: boolean }) {
@@ -402,8 +404,8 @@ export function createAddons(opts: { offline: boolean }) {
     ],
   });
   const canon = createBookCanon();
-  const all: Record<string, Extension> = { "system-prompts": prompts, "jev-damage-control": jev, "book-canon": canon };
-  return { all, list: [prompts, jev, canon] };
+  const all: Record<string, Extension> = { "system-prompts": prompts, "jev-damage-control": jev, "book-canon": canon, desk: deskAddon };
+  return { all, list: [prompts, jev, canon, deskAddon] };
 }
 
 export type Addons = ReturnType<typeof createAddons>;
