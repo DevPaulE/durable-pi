@@ -1,0 +1,6 @@
+{
+  "name": "dpi-desk",
+  "private": true,
+  "type": "module",
+  "description": "The desk shell: serves the desk front end and data root, and proxies /v1/* to the desk backend on 127.0.0.1:4790."
+}

@@ -1,0 +1,31 @@
+:root {
+  color-scheme: light dark;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+body {
+  margin: 0 auto;
+  max-width: 60rem;
+  padding: 1.5rem;
+  line-height: 1.45;
+}
+h1 {
+  font-size: 1.3rem;
+}
+h2 {
+  font-size: 1rem;
+  margin: 1.2rem 0 0.2rem;
+}
+.note {
+  max-width: 42rem;
+  opacity: 0.75;
+}
+pre {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-radius: 0.4rem;
+  padding: 0.6rem 0.8rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+ul {
+  padding-left: 1.2rem;
+}
