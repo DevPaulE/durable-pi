@@ -157,3 +157,42 @@ Note on §1b.7: the spec's wording "if the state step fails, no log line is kept
 superseded here. The log line is kept and the cache rebuild failure errors the call; the retry
 reconciles. Keeping the line is what makes the retry idempotent, and the log is the record of what the
 desk was told.
+
+## Round 5d — the start path is isolated (2026-11-19)
+
+Appended, not rewritten: the round-5 entry above stands. This records one product defect found by driving the
+documented recipe on the host it is actually run on, and its fix.
+
+**The defect.** The README's two commands were supposed to make the desk the desk. On this host they did not.
+An agent shell exports the HUB's environment (`DPI_TOKEN`, `DPI_PORT=4780`, `DPI_PROVIDER`, `DPI_HOME`,
+`DPI_START_DIRS`, `DPI_HOST`, `DPI_DEVICE_NAME`, `DPI_PROVIDERS`), and the backend reads `DPI_TOKEN` from the
+environment before its own env file — `apps/dpi-backend/src/config.ts:41` calls `process.loadEnvFile`, which
+does not override a variable that is already set, and `:57` takes `env.DPI_TOKEN`. A desk backend started from an
+agent shell therefore authenticated with the hub's token.
+
+Measured both directions on port 4790, same scratch home and fixture:
+
+| | desk token | hub token | proxied `/v1/sessions` |
+|---|---|---|---|
+| before | 401 | 200 | 401 |
+| after | 200 | 401 | 200 |
+
+Evidence: `EVIDENCE-f1-repro-backend-log-2026-11-19.txt`, `EVIDENCE-f1-fixed-start-log-2026-11-19.txt`.
+
+**The fix is one new file, `apps/dpi-desk/start.sh`**, and it stays inside this app. It drops every inherited
+`DPI_*` before starting anything, sets the desk's own `DPI_HOME` / `DESK_ROOT` / `DPI_PROVIDER=faux` /
+`DPI_PORT` / `DESK_PORT`, starts the shell first so the shell owns the token, traps `INT`/`TERM`/`EXIT`, and
+waits on `/healthz` before returning. It uses `tsx` from `apps/dpi-backend/node_modules/.bin`, not `node`:
+`server.ts` imports `./static.js` and plain `node` fails with `ERR_MODULE_NOT_FOUND`.
+
+The general hazard is recorded as an estate finding, not fixed here: this is a property of the config layer,
+and changing `config.ts` to prefer an env file over the environment would change every app's behaviour under a
+supervisor. A second product defect surfaced from the same recipe: the README's `node` invocation never worked.
+
+**G55 `desk-start-isolation`** (`cos/review/verifier/round5d/gates7.ts`, sha256
+`b89dde56131ec61057ef92b35e88f2e4e81d0268feb56c60f9b6b178710724c8`; report in `round5d/REPORT-gates7.md`) is the gate. It is behavioural, not a text scan: it starts the desk through `start.sh` with a hostile
+environment and requires, in one run, the backend up, both shell roots 200, the proxied `/v1` path 200, the
+desk's own token 200, and the inherited token 401. It refuses to run if 4790 or 4791 already has a listener,
+and a run that leaves one behind is RED. The planted selftest held RED-first on four mutations (drop loop
+removed, drop loop narrowed so `DPI_TOKEN` survives, shell run with `node`, no script at all) with the real
+script GREEN as the farm control.

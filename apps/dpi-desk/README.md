@@ -4,31 +4,41 @@ The second local server of the chief-of-staff desk (SPEC cos-app v1.1 §13a, opt
 front end (`web/`) and the desk data root, and proxies `/v1/*` to the desk's own backend on
 `127.0.0.1:4790`, holding the device token server-side so the browser never does.
 
-## Run (two commands)
+## Run (one command)
 
 ```sh
-# 1. the desk's own backend — its own ports, home and data root. DESK_ROOT is what makes this
-#    backend the desk: it is both where ledger_add writes and why a fresh conversation here comes
-#    up with the `desk` extension selected (ledger_add + the beforeTool guard, no human step).
-DPI_HOME="$HOME/.dpi-desk" DESK_ROOT="$PWD/fixtures/desk" DPI_PROVIDER=faux DPI_PORT=4790 npm --prefix apps/dpi-backend start
-
-# 2. the desk shell (dev data root = the Appendix B fixture inside the clone)
-DPI_HOME="$HOME/.dpi-desk" DESK_ROOT="$PWD/fixtures/desk" node apps/dpi-desk/server.ts
+apps/dpi-desk/start.sh          # both servers; Ctrl-C stops both
 ```
 
 Open <http://127.0.0.1:4791/>.
 
-Isolation: backend `4790`, shell `4791`, `DPI_HOME=~/.dpi-desk`, `DESK_ROOT` default `~/Desk`
-(overridable). The shell reads the token from `$DPI_HOME/backend.env`, or generates one and writes it
-`0600`; it never prints the token. It makes no call except the local `/v1` proxy.
+Overridable: `DESK_DPI_HOME` (default `~/.dpi-desk`) and `DESK_ROOT` (default `~/Desk`; the dev
+recipe uses `fixtures/desk` inside the clone).
+
+**Why a script and not two commands.** Agent shells on this host export the hub's `DPI_*`
+(`DPI_TOKEN`, `DPI_PORT=4780`, `DPI_PROVIDER`, `DPI_HOME`, `DPI_START_DIRS`, `DPI_HOST`,
+`DPI_DEVICE_NAME`, `DPI_PROVIDERS`). The backend reads `DPI_TOKEN` from the environment **before** it
+reads its own env file, and `process.loadEnvFile` does not override a variable that is already set —
+so a desk backend started in an agent shell authenticates with the **hub's** token and every `/v1`
+call is 401 against the desk's own token. Measured 2026-11-19: `desk token 401 / hub token 200`
+before the fix, `desk token 200 / hub token 401` after. `start.sh` drops every inherited `DPI_*`
+first, so the desk's own env file is the only source of the desk's configuration. It also runs the
+shell under `tsx`: `node apps/dpi-desk/server.ts` exits `ERR_MODULE_NOT_FOUND` because the shell's
+`import "./static.js"` is not remapped to `static.ts`.
+
+Isolation: backend `4790`, shell `4791`, `DESK_DPI_HOME=~/.dpi-desk`, `DESK_ROOT` default `~/Desk`.
+The shell owns the token: it reads `$DESK_DPI_HOME/backend.env`, or generates one and writes it
+`0600`, and it never prints it. The backend starts after the shell for that reason. It makes no call
+except the local `/v1` proxy.
 
 `web/` is a **placeholder**: one plain page that lists the projects and prints each data file. The
 three-pane front end is a later artifact.
 
 ## The guard is the second layer, not the wall
 
-The chat agent that talks to this desk runs with a tool filter of `ledger_add` plus read-only tools
-(`read`, `book_lookup`); it has no `bash`, `write` or `edit`. On a desk backend (`DESK_ROOT` set) a
+The chat agent that talks to this desk runs under a **default-deny** `beforeTool` filter: only
+`ledger_add` and `read` pass, so `bash`, `write` and `edit` are refused when the model asks for them
+(the tools are offered, the calls are blocked). On a desk backend (`DESK_ROOT` set) a
 fresh conversation selects the `desk` extension by default, so the filter is live and `ledger_add` is
 present without a human turning anything on; elsewhere the extension stays installed-and-unselected. The `beforeTool` hook in
 `apps/dpi-backend/src/desk-addon.ts` is a *second* line of defence for any tool that does reach it:
