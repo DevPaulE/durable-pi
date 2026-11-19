@@ -196,3 +196,10 @@ desk's own token 200, and the inherited token 401. It refuses to run if 4790 or 
 and a run that leaves one behind is RED. The planted selftest held RED-first on four mutations (drop loop
 removed, drop loop narrowed so `DPI_TOKEN` survives, shell run with `node`, no script at all) with the real
 script GREEN as the farm control.
+
+**Correction to the entry above (2026-11-19, appended not rewritten).** The gate file's sha256 written into the
+round-5d entry is superseded: six cross-vendor review rounds changed `gates7.ts`, and the review converged at
+sha256 `1755558ea1e60cac379eb744cc54f96f5bd1892856ca43006f7c5cb5857577ee`, with `NO FINDINGS` from the reviewer and
+a passing control on the canary. What the entry says about the defect, the fix, the measured token behaviour and
+the planted RED-first result still holds; only the hash moved. Gate: `cos/review/verifier/round5d/gates7.ts`,
+report `round5d/REPORT-gates7.md`, per-round receipts under `round5d/reviews/`.
