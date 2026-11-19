@@ -203,3 +203,12 @@ sha256 `1755558ea1e60cac379eb744cc54f96f5bd1892856ca43006f7c5cb5857577ee`, with 
 a passing control on the canary. What the entry says about the defect, the fix, the measured token behaviour and
 the planted RED-first result still holds; only the hash moved. Gate: `cos/review/verifier/round5d/gates7.ts`,
 report `round5d/REPORT-gates7.md`, per-round receipts under `round5d/reviews/`.
+
+**Final gate hash (appended 2026-11-19).** The first correction above named `1755558e…`. That too is superseded:
+the reviewer pair found three more real items (a fixed `/tmp` caller home that was deleted on every run, a hostile
+variable missing from the gate's own header list, and `--gate` combined with `--selftest` silently ignoring the
+filter), and all three are fixed. The gate ships at sha256
+`ec53269a6ab013c1c9b52ec317e18a857dfe7bb2d3de9140796360248464d182`, its canary at
+`d28fd88819b7537a1f85ab0a3b78f69b48203d336ae927e38171f75226d6c010`. The gate's own report carries the full chain
+of hashes and the reason each moved; the defect, the fix, the measured token behaviour and the planted RED-first
+result in the round-5d entry are unchanged.
