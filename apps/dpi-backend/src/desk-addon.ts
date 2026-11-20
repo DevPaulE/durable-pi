@@ -622,13 +622,16 @@ function apply(line: Line, opts: AddOpts): ApplyResult {
     if (rec.tornAt !== undefined) truncateSync(logPath(dir), rec.tornAt);
     // §1b.10: a closing line must name an open item or follow-up that exists. The check needs the log,
     // so it cannot live in validateLine, which runs before the record is read.
-    if (line.closes !== undefined) {
+    // §1b.10 idempotence: the same line is the same line, whatever kind or target it carries. An
+    // identical row already in the log makes this call a no-op before any refusal is considered,
+    // or a retried closer to a closed item would be refused and would write a false refusal row.
+    const already = rec.lines.some((l) => sameLine(l, { ...line, text, kind }));
+    if (line.closes !== undefined && !already) {
       const target = String(line.closes);
       const closable = rec.lines.some((l) => (l.kind === "open" || l.kind === "follow_up") && idOf(l) === target);
       if (!closable) return refuse(`dangling close: no open item or follow-up with id ${target}`);
       if (closedIds(rec.lines).has(target)) return refuse(`already closed: ${target}`);
     }
-    const already = rec.lines.some((l) => sameLine(l, { ...line, text, kind }));
     if (!already) {
       // A complete JSON row with no trailing newline is a valid record, not a torn one. Terminate it
       // with exactly one `\n` before appending, or the new row would be glued onto the old one and
