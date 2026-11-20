@@ -36,7 +36,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
-import { defineExtension, defineTool, hook, ToolTask, type Extension } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, GenerationTask, hook, ToolTask, type Extension } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 
 export type Line = {
@@ -908,17 +908,71 @@ const ledgerAddTool = defineTool({
     source: Type.Optional(Type.String({ description: "Where the line came from; must name its own date." })),
     kind: Type.Optional(Type.String({ description: "decision | open | follow_up | note" })),
     name: Type.Optional(Type.String({ description: "The project's display name." })),
+    closes: Type.Optional(Type.String({ description: "The id of the open item or follow-up this line closes." })),
   }),
   replay: "safe",
-  execute: async (args) => {
+  execute: async (args, api) => {
     const root = deskRoot();
     const a = args as Record<string, unknown>;
     const result = ledgerAdd(a as Line, { root, slug: String(a.project), name: a.name as string | undefined });
     if (!result.ok) return { content: [{ type: "text" as const, text: `refused: ${result.reason}` }] };
+    touchProject(api.conversationId, String(a.project));
     deriveViews(root, String(a.project));
     return { content: [{ type: "text" as const, text: `added to ${String(a.project)}` }] };
   },
 });
+
+// ---------------------------------------------------------------- receipts and egress per turn (§10, §11)
+//
+// A chat turn is a real run: the model is rented, so the turn is both a receipt (one row per run) and
+// an egress event (one row per outbound call). The numbers are the turn's own usage, summed over the
+// assistant messages the provider returned in that turn — never a placeholder. A turn is attributed
+// to the projects its `ledger_add` calls named; a turn that named none is attributed to the desk's
+// projects, because the inference still happened on their behalf.
+type Turn = { startedAt: number; tokens: number; cost: number };
+const turns = new Map<string, Turn>();
+const turnProjects = new Map<string, Set<string>>();
+
+function touchProject(conversationId: unknown, slug: string): void {
+  const set = turnProjects.get(String(conversationId)) ?? new Set<string>();
+  set.add(slug);
+  turnProjects.set(String(conversationId), set);
+}
+
+/** Close out a turn: one run row and one egress row per project, from this turn's own usage. */
+function flushTurn(conversationId: unknown, answer: { stopReason?: string }): void {
+  const id = String(conversationId);
+  const turn = turns.get(id);
+  const named = turnProjects.get(id);
+  turns.delete(id);
+  turnProjects.delete(id);
+  if (!turn) return;
+  const root = deskRoot();
+  const targets = named && named.size ? [...named] : projectDirs(root);
+  if (!targets.length) return;
+  const at = nowIso();
+  const run = `${id}:${turn.startedAt}`;
+  for (const slug of targets) {
+    try {
+      recordRun(
+        {
+          run,
+          outcome: answer.stopReason === "stop" || answer.stopReason === undefined ? "ok" : String(answer.stopReason),
+          at,
+          ms: Math.max(0, Date.now() - turn.startedAt),
+          tokens: turn.tokens,
+          cost: turn.cost,
+          stepped_in: false,
+          egress: [{ at, what: "chat turn", to: "rented model endpoint", bytes: 0 }],
+        },
+        { root, slug },
+      );
+      deriveViews(root, slug);
+    } catch {
+      /* a receipt must never break the turn it describes */
+    }
+  }
+}
 
 /** The extension `addons.ts` registers: `ledger_add`, plus the guard wired as a `beforeTool` hook. */
 export const deskAddon: Extension = defineExtension({
@@ -931,6 +985,25 @@ export const deskAddon: Extension = defineExtension({
         if (!ALLOWED_TOOLS.has(call.name)) return { block: GUARD_REASON };
         const v = guardToolCall(call.name, call.arguments as Record<string, unknown>, { root: deskRoot() });
         return v.block ? { block: v.reason ?? GUARD_REASON } : undefined;
+      },
+    }),
+    hook(GenerationTask, {
+      // A turn starts at its first request; its usage is the sum of the responses the provider returned.
+      beforeRequest: (_request, api) => {
+        const id = String(api.conversationId);
+        if (!turns.has(id)) turns.set(id, { startedAt: Date.now(), tokens: 0, cost: 0 });
+        return undefined;
+      },
+      afterResponse: (message, api) => {
+        const id = String(api.conversationId);
+        const turn = turns.get(id) ?? { startedAt: Date.now(), tokens: 0, cost: 0 };
+        turn.tokens += Number(message.usage?.totalTokens ?? 0);
+        turn.cost += Number(message.usage?.cost?.total ?? 0);
+        turns.set(id, turn);
+      },
+      onYield: (answer, api) => {
+        flushTurn(api.conversationId, answer);
+        return undefined;
       },
     }),
   ],
