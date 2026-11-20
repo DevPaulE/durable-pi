@@ -29,10 +29,20 @@ const CONTENT_TYPES: Record<string, string> = {
  * port on import: this way the decision can be exercised without a server, and there is one copy of
  * it for every route. Names are lower-case, as node hands them over.
  *
- * The accepted limit of this slice, not a defect to fix here: a **local process that sends no headers
- * at all is still trusted** — the desk trusts its machine. What this check stops is a *page*, which
- * always sends a Host, and whose Origin and Sec-Fetch-Site come from the browser and not the script,
- * so a hostname rebound to 127.0.0.1 cannot reach the desk's data as if it were the desk's own page.
+ * The third clause is narrower than it looks, and deliberately so: it exists to stop what can read or
+ * write, not what can only display. A cross-site `fetch` of `/desk/projects.json` is a read (`cors`,
+ * `no-cors`, `same-origin`), and it is refused. A cross-site *navigation* (`Sec-Fetch-Mode: navigate`)
+ * is refused by the first two clauses alone if its Host or Origin is wrong — and if they are right it
+ * is only a display: the browser's own same-origin policy still stops a foreign page reading the
+ * result, and a `file://` wrapper (used to show the desk at a phone width) sends our Host and no
+ * Origin at all, so refusing it would stop a display without stopping a read.
+ *
+ * Two limits, stated so nobody reads this as "no foreign page can touch the desk":
+ *   * a foreign page may still **display** the desk in a frame — it cannot read it. This slice sends
+ *     no `X-Frame-Options` and no `frame-ancestors`, so framing is not refused here;
+ *   * a **local process that sends no headers at all is still trusted** — the desk trusts its machine.
+ * What the check does stop is the measured defect: a page that rebound a hostname to 127.0.0.1 sends
+ * `Host: evil.example`, which the first clause refuses on every route, whatever headers follow.
  */
 export function sameOriginHeaders(headers: Record<string, string | string[] | undefined>, port: number): boolean {
   const one = (name: string): string | undefined => {
@@ -44,7 +54,12 @@ export function sameOriginHeaders(headers: Record<string, string | string[] | un
   const origin = one("origin");
   if (origin !== undefined && origin !== `http://127.0.0.1:${port}` && origin !== `http://localhost:${port}`) return false;
   const site = one("sec-fetch-site");
-  if (site !== undefined && site !== "same-origin" && site !== "none") return false;
+  if (site !== undefined && site !== "same-origin" && site !== "none") {
+    // Cross-site or same-site: only a navigation passes, and only because it cannot read the reply.
+    // Anything else — `cors`, `no-cors`, `same-origin`, or no mode at all, which is not a browser
+    // navigation — is a scripted request and is refused.
+    if (one("sec-fetch-mode") !== "navigate") return false;
+  }
   return true;
 }
 
