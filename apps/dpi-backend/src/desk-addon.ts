@@ -36,7 +36,7 @@ import {
 import { homedir, hostname } from "node:os";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
-import { defineExtension, defineTool, GenerationTask, hook, ToolTask, type Extension } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, GenerationTask, hook, ToolTask, type Extension, type JsonObject } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 
 export type Line = {
@@ -827,6 +827,13 @@ function pathArg(args: Record<string, unknown> | undefined): unknown {
   return undefined;
 }
 
+/** Which of the three spellings carried the path, so the same one carries the path the guard judged. */
+function pathKey(args: Record<string, unknown> | undefined): string | undefined {
+  if (!args) return undefined;
+  for (const key of ["path", "file_path", "filePath"]) if (args[key] !== undefined) return key;
+  return undefined;
+}
+
 /**
  * The read half of the guard (§1b.8): a seat may read what the desk *holds* — anything that really
  * lives under the desk root — and nothing else. The path is resolved against the desk root and then
@@ -835,36 +842,55 @@ function pathArg(args: Record<string, unknown> | undefined): unknown {
  * that does not exist is resolved through its nearest existing ancestor, so "it does not exist" is
  * never mistaken for "it is inside". An empty or non-string path is refused: a call the desk cannot
  * place is not a call it should allow, and refusing it must not throw.
+ *
+ * It returns the path the tool must open, and the caller hands the tool that path. Judging a path is
+ * not enough on its own: the tool resolves its own argument — against the session's `cwd`, expanding
+ * `~` against `$HOME` — so a guard that resolves against the desk root while the tool resolves against
+ * the cwd lets `secret.txt`, `../../work/secret.txt` and `~/home-secret.txt` through the guard and
+ * then opens them outside the desk. One resolver, used by both, cannot disagree with itself.
+ * A spelled home path is refused outright: `~` names the host, never the desk.
  */
-function readConfined(p: unknown, root: string): boolean {
-  if (typeof p !== "string" || !p.trim()) return false;
+function confinedPath(p: unknown, root: string): string | undefined {
+  if (typeof p !== "string" || !p.trim()) return undefined;
+  if (p.startsWith("~")) return undefined;
   const realRoot = realOrParent(root);
   const realTarget = realOrParent(resolve(root, p));
-  return realTarget.startsWith(realRoot + sep);
+  return realTarget.startsWith(realRoot + sep) ? realTarget : undefined;
 }
 
 /**
  * The runtime guard (§1b.8). Three policies, by tool:
- *   * `read` is confined to the desk root (`readConfined`): the seat reads the desk, not the host.
+ *   * `read` is confined to the desk root (`confinedPath`): the seat reads the desk, not the host.
  *   * `write`/`edit` may not touch the record files or the lock.
  *   * `bash` may not write into the desk tree (a plain read of a record file is still allowed).
  * The hook's default-deny filter sits above this; nothing here is reached for an unknown tool.
  */
-export function guardToolCall(toolName: string, args: Record<string, unknown> | undefined, opts: { root: string }): { block: boolean; reason?: string } {
+export function guardToolCall(toolName: string, args: Record<string, unknown> | undefined, opts: { root: string }): { block: boolean; reason?: string; arguments?: JsonObject } {
   const blocked = (reason: string) => ({ block: true, reason });
   const root = opts.root;
+  // Hand the tool the path this guard judged, so the tool's own cwd/tilde resolution cannot move the
+  // target after it was checked. No key, no rewrite: the tool then sees exactly what the model sent.
+  const withPath = (path: string): JsonObject | undefined => {
+    const key = pathKey(args);
+    return key === undefined ? undefined : ({ ...args, [key]: path } as JsonObject);
+  };
   if (toolName === "read") {
     // A read the desk cannot confine to its own root is refused, whatever argument spelling it used.
-    if (!readConfined(pathArg(args), root)) return blocked(READ_REASON);
-    return { block: false };
+    const target = confinedPath(pathArg(args), root);
+    if (target === undefined) return blocked(READ_REASON);
+    const rewritten = withPath(target);
+    return rewritten === undefined ? { block: false } : { block: false, arguments: rewritten };
   }
   if (toolName === "write" || toolName === "edit") {
     const path = String((args?.path as string) ?? (args?.file_path as string) ?? (args?.filePath as string) ?? "");
     if (!path) return { block: false };
+    // Nothing outside the desk may be created or changed, however the path is spelled.
+    const target = confinedPath(path, root);
+    if (target === undefined) return blocked(GUARD_REASON);
     // The record files and the lock are the add-on's; a note written beside them is nobody's business.
-    const target = resolve(root, path);
     if (isRecordPath(target, root)) return blocked(GUARD_REASON);
-    return { block: false };
+    const rewritten = withPath(target);
+    return rewritten === undefined ? { block: false } : { block: false, arguments: rewritten };
   }
   if (toolName === "bash") {
     const cmd = String((args?.command as string) ?? "");
@@ -987,7 +1013,12 @@ export const deskAddon: Extension = defineExtension({
         // Default deny: only the ledger's own writer and plain reads pass; an unknown tool is blocked.
         if (!ALLOWED_TOOLS.has(call.name)) return { block: GUARD_REASON };
         const v = guardToolCall(call.name, call.arguments as Record<string, unknown>, { root: deskRoot() });
-        return v.block ? { block: v.reason ?? GUARD_REASON } : undefined;
+        if (v.block) return { block: v.reason ?? GUARD_REASON };
+        // The guard's own resolution is the one the tool must use; an unrewritten call keeps the model's
+        // arguments exactly as they were.
+        if (v.arguments === undefined) return undefined;
+        // A rewrite is the model's own arguments with one string replaced, so it is JSON by construction.
+        return { arguments: v.arguments };
       },
     }),
     hook(GenerationTask, {
