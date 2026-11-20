@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { serveRequest } from "./static.js";
+import { sameOriginHeaders, serveRequest } from "./static.js";
 
 const DPI_HOME = process.env.DPI_HOME ?? join(homedir(), ".dpi-desk");
 const DESK_ROOT = resolve(process.env.DESK_ROOT ?? join(homedir(), "Desk"));
@@ -59,30 +59,6 @@ function proxy(req: IncomingMessage, res: ServerResponse, token: string): void {
     res.end("desk backend unavailable on 127.0.0.1:4790");
   });
   req.pipe(upstream);
-}
-
-/**
- * The shell holds the device token, so `/v1/*` may only be reached from a page the shell itself
- * served. A request is same-origin when its Host is the shell's own authority, its Origin (when
- * sent) is exactly that authority over http, and its Sec-Fetch-Site (when sent) is same-origin or
- * none. Anything else — another host, a `null` origin, a cross-site fetch — is refused before the
- * token is ever attached. Exact match, never a prefix: `http://127.0.0.1:4791.evil` is not us.
- */
-const SHELL_HOSTS = new Set([`127.0.0.1:${SHELL_PORT}`, `localhost:${SHELL_PORT}`]);
-const SHELL_ORIGINS = new Set([`http://127.0.0.1:${SHELL_PORT}`, `http://localhost:${SHELL_PORT}`]);
-
-function sameOrigin(req: IncomingMessage): boolean {
-  const header = (name: string): string | undefined => {
-    const v = req.headers[name];
-    return Array.isArray(v) ? v[0] : v;
-  };
-  const host = header("host");
-  if (!host || !SHELL_HOSTS.has(host)) return false;
-  const origin = header("origin");
-  if (origin !== undefined && !SHELL_ORIGINS.has(origin)) return false;
-  const site = header("sec-fetch-site");
-  if (site !== undefined && site !== "same-origin" && site !== "none") return false;
-  return true;
 }
 
 /**
@@ -148,15 +124,20 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
     res.end("bad request");
     return;
   }
+  // Every route this shell answers — `/v1/*`, the page, the assets, `/desk/*` — is answered only to
+  // the shell's own origin. The check is first, so a request that is not ours is refused before
+  // anything is read off disk, before a directory listing could be built, and before the device token
+  // is ever attached to a proxied call. One decision, in `static.ts`, shared by every route.
+  if (!sameOriginHeaders(req.headers, SHELL_PORT)) {
+    // A local process that sends no headers at all is still trusted — the desk trusts its machine.
+    // A page is not: its Host, Origin and Sec-Fetch-Site come from the browser, not the script.
+    res.writeHead(403, { "content-type": "text/plain" });
+    res.end("forbidden: request from another origin");
+    return;
+  }
   const raw = req.url ?? "/";
   const target = raw.split("?")[0];
   if (target === "/v1" || target.startsWith("/v1/")) {
-    if (!sameOrigin(req)) {
-      // Refuse without forwarding: the token is never attached to another origin's request.
-      res.writeHead(403, { "content-type": "text/plain" });
-      res.end("forbidden: cross-origin request to the desk backend");
-      return;
-    }
     const route = v1Route(req.method ?? "GET", target);
     if (!route.allow) {
       // Off-list (or wrong method): the backend is never contacted. Decide on the raw target above,
