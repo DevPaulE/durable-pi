@@ -3,17 +3,26 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Desk — data path</title>
+    <title>Desk</title>
     <link rel="stylesheet" href="/style.css" />
   </head>
   <body>
-    <h1>Desk — data path</h1>
-    <p class="note">
-      Placeholder page (slice 1). It lists the projects and prints each data file verbatim, so the
-      data path from the ledger through the shell can be seen working. The three-pane front end is
-      Paul's and his verifier chat's to design; it will replace this folder.
-    </p>
-    <div id="app">loading…</div>
-    <script src="/app.js"></script>
+    <header id="bar">
+      <button type="button" data-toggle="left" aria-label="Show or hide projects">Projects</button>
+      <span id="bar-title">Desk</span>
+      <button type="button" data-toggle="right" aria-label="Show or hide chat">Chat</button>
+    </header>
+    <div id="layout">
+      <aside id="pane-left" class="pane" aria-label="Projects"></aside>
+      <main id="pane-centre" class="pane" aria-label="Page"></main>
+      <aside id="pane-right" class="pane" aria-label="Chat">
+        <div id="chat-log"></div>
+        <div id="chat-row">
+          <input id="chat-input" type="text" autocomplete="off" placeholder="Ask about your desk" />
+          <button id="chat-send" type="button">Send</button>
+        </div>
+      </aside>
+    </div>
+    <script type="module" src="/app.js"></script>
   </body>
 </html>

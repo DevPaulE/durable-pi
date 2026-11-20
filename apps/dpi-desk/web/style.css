@@ -1,31 +1,265 @@
 :root {
   color-scheme: light dark;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-body {
-  margin: 0 auto;
-  max-width: 60rem;
-  padding: 1.5rem;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
   line-height: 1.45;
 }
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: none;
+  height: 2.6rem;
+  padding: 0 0.7rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+}
+
+#bar-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#bar button {
+  flex: none;
+}
+
+#layout {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.pane {
+  min-width: 0;
+  overflow: auto;
+  padding: 0.8rem 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+#pane-left {
+  flex: 0 0 auto;
+  width: 15rem;
+  border-right: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+
+#pane-right {
+  flex: 0 0 auto;
+  width: 20rem;
+  border-left: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  display: flex;
+  flex-direction: column;
+}
+
+#pane-centre {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-right: 1.8rem;
+}
+
+.collapsed {
+  display: none !important;
+}
+
+/* Narrow windows: give the page room, so the centre pane is not a 100px slit. */
+@media (max-width: 1099px) {
+  #pane-left {
+    width: 10rem;
+  }
+  #pane-right {
+    width: 16rem;
+  }
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  background: transparent;
+  color: inherit;
+  border-radius: 0.35rem;
+  padding: 0.2rem 0.5rem;
+}
+
+button.active {
+  font-weight: 700;
+  border-color: currentColor;
+}
+
+.navlink {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  padding: 0.25rem 0.3rem;
+  border-radius: 0.3rem;
+}
+
+.navlink.active {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.navhead {
+  margin: 0.9rem 0 0.2rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+}
+
+.nav-projects {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0.5rem 0 0.8rem;
+}
+
 h1 {
-  font-size: 1.3rem;
+  font-size: 1.25rem;
+  margin: 0 0 0.2rem;
 }
+
 h2 {
-  font-size: 1rem;
-  margin: 1.2rem 0 0.2rem;
+  font-size: 1.05rem;
+  margin: 1rem 0 0.3rem;
 }
-.note {
-  max-width: 42rem;
+
+h3 {
+  font-size: 0.9rem;
+  margin: 0.8rem 0 0.2rem;
+  opacity: 0.7;
+}
+
+.fresh {
+  margin: 0;
+  font-size: 0.85rem;
   opacity: 0.75;
 }
-pre {
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  border-radius: 0.4rem;
-  padding: 0.6rem 0.8rem;
-  overflow-x: auto;
-  white-space: pre-wrap;
+
+.slug,
+.gap,
+.needs,
+.refused,
+.none {
+  margin: 0.15rem 0;
+  font-size: 0.85rem;
 }
-ul {
-  padding-left: 1.2rem;
+
+.lines,
+.inbox,
+.projects {
+  list-style: none;
+  margin: 0.2rem 0;
+  padding: 0;
+}
+
+.line,
+.item,
+.project,
+.quietrow {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.source,
+.date,
+.slug {
+  opacity: 0.7;
+}
+
+.date {
+  font-variant-numeric: tabular-nums;
+}
+
+.unreadable,
+.unreadable-row .unreadable {
+  font-style: italic;
+}
+
+figure.capture {
+  margin: 0.4rem 0 0;
+}
+
+figure.capture img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.35rem;
+}
+
+figcaption {
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.25rem 0.45rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+  vertical-align: top;
+}
+
+.sentence {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.missing,
+.empty {
+  opacity: 0.7;
+}
+
+#chat-log {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+#chat-row {
+  flex: none;
+  display: flex;
+  gap: 0.4rem;
+  padding-top: 0.6rem;
+}
+
+#chat-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+  border-radius: 0.35rem;
+  background: transparent;
+  color: inherit;
 }
