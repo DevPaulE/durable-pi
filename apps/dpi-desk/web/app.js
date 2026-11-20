@@ -48,6 +48,232 @@ const state = {
   page: "today",
 };
 
+// ---------------------------------------------------------------- chat (WO-6)
+// One session per project, named desk-<slug>. The page finds or creates it through /v1, sends a
+// message with a unique requestId and renders the settled answer as text. A failure is one plain
+// sentence in the right pane — never a status code, never the shell's 502 body, never in the centre.
+const chat = { device: null, slug: null, sessionId: null, agent: "main", busy: false, seq: 0, downShown: false };
+
+/** The project the chat is about: the page in view, or the first project when none is selected. */
+function slugInView() {
+  const rows = (state.index && state.index.projects) || [];
+  if (state.page !== "today" && state.page !== "projects" && state.selected) return state.selected;
+  return rows.length ? rows[0].slug : null;
+}
+
+function chatLog() {
+  return pane("chat-log");
+}
+
+function addMessage(who, text) {
+  const p = document.createElement("p");
+  p.className = "msg " + who;
+  p.textContent = String(text);
+  const log = chatLog();
+  if (log) {
+    log.append(p);
+    log.scrollTop = log.scrollHeight;
+  }
+  return p;
+}
+
+function addNotice(text) {
+  const p = document.createElement("p");
+  p.className = "notice";
+  p.textContent = text;
+  const log = chatLog();
+  if (log) log.append(p);
+}
+
+function backendDown() {
+  if (!chat.downShown) {
+    chat.downShown = true;
+    addNotice("The desk's assistant isn't running right now.");
+  }
+  return false;
+}
+
+async function v1Json(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body !== undefined ? { "content-type": "application/json" } : undefined,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  let json = null;
+  try {
+    json = await res.json();
+  } catch {
+    json = null;
+  }
+  return { ok: res.ok, status: res.status, json };
+}
+
+function pickModel(device) {
+  const id = (device && device.defaultModel) || "";
+  const models = (device && device.models) || [];
+  const found = models.find((m) => m && m.id === id);
+  return { provider: (found && found.provider) || "faux", modelId: id || "echo" };
+}
+
+function pickCwd(device) {
+  const dirs = (device && device.startDirs) || [];
+  return dirs[0] || (device && device.codeDir) || ".";
+}
+
+function setChatWhere(slug) {
+  const el = pane("chat-where");
+  if (!el) return;
+  const rows = (state.index && state.index.projects) || [];
+  const row = rows.find((r) => r.slug === slug);
+  el.textContent = row ? row.name : "Chat";
+}
+
+/** Find or create the project's session; the agent address is `main` (the session's root). */
+async function ensureChat(slug) {
+  if (!slug) return false;
+  if (chat.slug === slug && chat.sessionId) return true;
+  setChatWhere(slug);
+  try {
+    if (!chat.device) {
+      const device = await v1Json("GET", "/v1/device");
+      if (!device.ok) return backendDown();
+      chat.device = device.json;
+    }
+    const sessions = await v1Json("GET", "/v1/sessions");
+    if (!sessions.ok) return backendDown();
+    const list = Array.isArray(sessions.json) ? sessions.json : [];
+    const name = "desk-" + slug;
+    let session = list.find((s) => s && s.name === name);
+    if (!session) {
+      const created = await v1Json("POST", "/v1/sessions", {
+        name,
+        cwd: pickCwd(chat.device),
+        model: pickModel(chat.device),
+      });
+      if (!created.ok) return backendDown();
+      session = created.json;
+    }
+    const id = session && session.id ? String(session.id) : "";
+    if (!id) return backendDown();
+    chat.slug = slug;
+    chat.sessionId = id;
+    chat.downShown = false;
+    return true;
+  } catch {
+    return backendDown();
+  }
+}
+
+function messagePath(leaf) {
+  return "/v1/sessions/" + chat.sessionId + "/agents/" + chat.agent + "/" + leaf;
+}
+
+function transcriptText(json) {
+  const list = Array.isArray(json) ? json : (json && (json.items || json.entries || json.messages)) || [];
+  if (!Array.isArray(list)) return "";
+  for (let i = list.length - 1; i >= 0; i--) {
+    const e = list[i];
+    if (!e) continue;
+    const role = e.role || e.kind;
+    if (role && role !== "assistant" && role !== "agent") continue;
+    const text = typeof e.text === "string" ? e.text : (typeof e.content === "string" ? e.content : "");
+    if (text) return text;
+  }
+  return "";
+}
+
+async function fallbackTranscript() {
+  try {
+    const r = await v1Json("GET", messagePath("transcript"));
+    if (!r.ok) return;
+    const text = transcriptText(r.json);
+    if (text) addMessage("desk", text);
+  } catch {
+    /* the send path already reported the failure */
+  }
+}
+
+async function settled(text) {
+  addMessage("desk", text);
+  chat.downShown = false;
+  // A write may have landed a new ledger line: re-read the data files and re-render, no reload.
+  await refreshDesk();
+}
+
+async function pollSubmission(submissionId) {
+  for (let i = 0; i < 10; i++) {
+    const r = await v1Json("GET", "/v1/sessions/" + chat.sessionId + "/submissions/" + submissionId + "?waitMs=30000");
+    if (r.status === 200 && r.json && r.json.status === "done" && r.json.answer) {
+      await settled(String(r.json.answer.text ?? ""));
+      return;
+    }
+    if (!r.ok && r.status !== 202) return backendDown();
+  }
+  addNotice("Still working on that one — the answer will appear here.");
+}
+
+async function send() {
+  if (chat.busy) return;
+  const input = pane("chat-input");
+  const text = ((input && input.value) || "").trim();
+  if (!text) return;
+  const ready = await ensureChat(slugInView());
+  if (!ready) return;
+  chat.busy = true;
+  chat.seq += 1;
+  const requestId = "req-" + chat.seq + "-" + Math.random().toString(36).slice(2, 12);
+  addMessage("you", text);
+  input.value = "";
+  try {
+    const res = await v1Json("POST", messagePath("messages"), { content: text, requestId, waitMs: 300000 });
+    if (res.status === 202 && res.json && res.json.submissionId) {
+      await pollSubmission(res.json.submissionId);
+    } else if (res.ok && res.json && res.json.status === "done" && res.json.answer) {
+      await settled(String(res.json.answer.text ?? ""));
+    } else if (res.ok && res.json && res.json.status === "unanswered") {
+      addMessage("desk", "The assistant didn't answer that one.");
+    } else {
+      await fallbackTranscript();
+    }
+  } catch {
+    backendDown();
+  } finally {
+    chat.busy = false;
+  }
+}
+
+async function stopChat() {
+  if (!chat.sessionId) return;
+  try {
+    await v1Json("POST", messagePath("abort"), {});
+  } catch {
+    backendDown();
+  }
+}
+
+async function refreshDesk() {
+  state.index = await readJson("projects.json");
+  state.brief = await readJson("views/brief.json");
+  renderNav();
+  await drawCentre();
+}
+
+function wireChat() {
+  const sendButton = pane("chat-send");
+  if (sendButton) sendButton.addEventListener("click", () => { void send(); });
+  const input = pane("chat-input");
+  if (input) {
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        void send();
+      }
+    });
+  }
+  const stopButton = pane("chat-stop");
+  if (stopButton) stopButton.addEventListener("click", () => { void stopChat(); });
+}
+
 function currentRow() {
   if (!state.selected || !state.index) return null;
   for (const r of state.index.projects || []) if (r.slug === state.selected) return r;
@@ -218,6 +444,8 @@ async function select(page, slug) {
   if (slug !== undefined) state.selected = slug;
   renderNav();
   await drawCentre();
+  // Chat follows the project in view — including Today, which uses the first project.
+  await ensureChat(slugInView());
 }
 
 function wireToggles() {
@@ -233,10 +461,13 @@ function wireToggles() {
 
 async function main() {
   wireToggles();
+  wireChat();
   state.index = await readJson("projects.json");
   state.brief = await readJson("views/brief.json");
   renderNav();
   await drawCentre();
+  // No click at all still ends with a live chat target.
+  await ensureChat(slugInView());
 }
 
 main();

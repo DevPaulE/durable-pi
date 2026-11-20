@@ -199,6 +199,47 @@ h3 {
   font-style: italic;
 }
 
+.chathead {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.chathead #chat-where {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.msg {
+  margin: 0.4rem 0;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.4rem;
+  overflow-wrap: anywhere;
+}
+
+.msg.you {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.msg.desk {
+  border-left: 2px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+
+.notice {
+  margin: 0.6rem 0;
+  font-size: 0.85rem;
+  font-style: italic;
+  opacity: 0.8;
+  overflow-wrap: anywhere;
+}
+
 figure.capture {
   margin: 0.4rem 0 0;
 }

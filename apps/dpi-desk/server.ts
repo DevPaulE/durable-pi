@@ -85,6 +85,46 @@ function sameOrigin(req: IncomingMessage): boolean {
   return true;
 }
 
+/**
+ * The `/v1` routes the page is allowed to reach. The decision is made on the RAW request target with
+ * the query string stripped and nothing else done to it — no decoding, no `..` collapsing, no prefix
+ * match — and that same value is what gets forwarded. A route off this list is refused here, so the
+ * backend is never contacted for it.
+ *
+ * `:s`, `:a` and a submission id must be one segment of `[A-Za-z0-9_~-][A-Za-z0-9._~-]*`: no `%`, no
+ * dot-segments (the first character cannot be `.`).
+ */
+const SEGMENT = /^[A-Za-z0-9_~-][A-Za-z0-9._~-]*$/;
+
+type RouteDecision = { allow: true } | { allow: false; status: number };
+
+function v1Route(method: string, target: string): RouteDecision {
+  const parts = target.split("/");
+  if (parts[0] !== "" || parts[1] !== "v1") return { allow: false, status: 404 };
+  const rest = parts.slice(2);
+  const get = method === "GET";
+  const post = method === "POST";
+  const wrongMethod: RouteDecision = { allow: false, status: 405 };
+  if (rest.length === 1 && rest[0] === "device") return get ? { allow: true } : wrongMethod;
+  if (rest.length === 1 && rest[0] === "sessions") return get || post ? { allow: true } : wrongMethod;
+  if (rest.length === 2 && rest[0] === "sessions" && SEGMENT.test(rest[1])) return get ? { allow: true } : wrongMethod;
+  if (rest.length === 3 && rest[0] === "sessions" && SEGMENT.test(rest[1]) && rest[2] === "agents") {
+    return get || post ? { allow: true } : wrongMethod;
+  }
+  if (rest.length === 5 && rest[0] === "sessions" && SEGMENT.test(rest[1]) && rest[2] === "agents" && SEGMENT.test(rest[3])) {
+    const leaf = rest[4];
+    if (leaf === "entries" || leaf === "transcript" || leaf === "events" || leaf === "config") {
+      return get ? { allow: true } : wrongMethod;
+    }
+    if (leaf === "messages" || leaf === "abort") return post ? { allow: true } : wrongMethod;
+    return { allow: false, status: 404 };
+  }
+  if (rest.length === 4 && rest[0] === "sessions" && SEGMENT.test(rest[1]) && rest[2] === "submissions" && SEGMENT.test(rest[3])) {
+    return get ? { allow: true } : wrongMethod;
+  }
+  return { allow: false, status: 404 };
+}
+
 const token = deviceToken();
 
 const server = createServer((req, res) => {
@@ -108,11 +148,21 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
     res.end("bad request");
     return;
   }
-  if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) {
+  const raw = req.url ?? "/";
+  const target = raw.split("?")[0];
+  if (target === "/v1" || target.startsWith("/v1/")) {
     if (!sameOrigin(req)) {
       // Refuse without forwarding: the token is never attached to another origin's request.
       res.writeHead(403, { "content-type": "text/plain" });
       res.end("forbidden: cross-origin request to the desk backend");
+      return;
+    }
+    const route = v1Route(req.method ?? "GET", target);
+    if (!route.allow) {
+      // Off-list (or wrong method): the backend is never contacted. Decide on the raw target above,
+      // forward on the same raw target below — never on a normalised one.
+      res.writeHead(route.status, { "content-type": "text/plain" });
+      res.end("not allowed");
       return;
     }
     proxy(req, res, token);

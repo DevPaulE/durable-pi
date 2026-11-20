@@ -26,9 +26,25 @@ done
 # 2. The desk's own configuration. DESK_* names survive step 1.
 export DPI_HOME="${DESK_DPI_HOME:-$HOME/.dpi-desk}"
 export DESK_ROOT="${DESK_ROOT:-$ROOT/fixtures/desk}"
-export DPI_PROVIDER=faux
 export DPI_PORT=4790
 export DESK_PORT=4791
+
+# 2a. Provider credentials come from the desk's own env file only, never the caller's shell. The
+#     backend loads $DPI_HOME/backend.env itself, but process.loadEnvFile does not override a
+#     variable that is already set — so an inherited provider key would beat the file. Drop them
+#     here, exactly as step 1 drops DPI_*, and let the file be the only source.
+for v in OPENROUTER_API_KEY RADIUS_API_KEY OLLAMA_API_KEY OLLAMA_BASE_URL OLLAMA_DEFAULT_MODEL; do
+  unset "$v" 2>/dev/null || true
+done
+
+# 2b. Provider: the file's own if it names one, otherwise the default stays faux (G55). Never
+#     exported from the caller's shell. When the file names DPI_PROVIDER we leave it unset here so
+#     that the backend's loadEnvFile is what sets it; setting it ourselves is what would pin faux.
+if [ -f "$DPI_HOME/backend.env" ] && grep -qE '^[[:space:]]*DPI_PROVIDER=' "$DPI_HOME/backend.env"; then
+  :
+else
+  export DPI_PROVIDER=faux
+fi
 
 # 3. The shell owns the token: it reads $DPI_HOME/backend.env, or generates one and writes it 0600.
 #    It must start first, because the backend exits when it finds no token of its own.
