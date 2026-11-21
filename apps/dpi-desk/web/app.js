@@ -120,10 +120,13 @@ function pickCwd(device) {
   return dirs[0] || (device && device.codeDir) || ".";
 }
 
-/** Empty the chat pane. Called on every project switch, so one project's lines never sit under another's. */
+/** Empty the chat pane. Called on every project switch, so one project's lines never sit under another's.
+ * An empty pane invalidates the once-only latch too: the next backend failure must say its one plain
+ * sentence, not be suppressed as "already told him" because an earlier pane was told. */
 function clearChat() {
   const log = chatLog();
   if (log) put(log, null);
+  chat.downShown = false;
 }
 
 /** The text of one transcript item: `text` for a user line, the `text` blocks for an assistant one. */
