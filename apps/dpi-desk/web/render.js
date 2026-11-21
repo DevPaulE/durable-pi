@@ -166,7 +166,10 @@ function safePath(p) {
   return /^[a-z0-9_][a-z0-9_./-]*$/i.test(p);
 }
 
-export function renderInbox(inbox) {
+// `image_path` in the record is relative to the project (`inbox/<name>.png`), so the URI is built
+// from the project's own slug here: `/desk/projects/<slug>/<image_path>`. The slug is passed in
+// because the inbox record does not carry it. Two spellings must both be safe: the slug and the path.
+export function renderInbox(inbox, slug) {
   const root = document.createDocumentFragment();
   if (inbox && inbox.unreadable === true) {
     root.append(readNode(inbox));
@@ -188,9 +191,9 @@ export function renderInbox(inbox) {
     li.append(el("span", "text", it && it.text));
     if (it && it.image_path) {
       const fig = el("figure", "capture");
-      if (safePath(it.image_path)) {
+      if (safePath(slug) && safePath(it.image_path)) {
         const im = document.createElement("img");
-        im.setAttribute("src", "/desk/" + it.image_path);
+        im.setAttribute("src", "/desk/projects/" + slug + "/" + it.image_path);
         im.setAttribute("alt", it.image_path);
         fig.append(im);
       }

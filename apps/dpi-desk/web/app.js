@@ -120,6 +120,41 @@ function pickCwd(device) {
   return dirs[0] || (device && device.codeDir) || ".";
 }
 
+/** Empty the chat pane. Called on every project switch, so one project's lines never sit under another's. */
+function clearChat() {
+  const log = chatLog();
+  if (log) put(log, null);
+}
+
+/** The text of one transcript item: `text` for a user line, the `text` blocks for an assistant one. */
+function transcriptItemText(it) {
+  if (!it) return "";
+  if (typeof it.text === "string") return it.text;
+  const blocks = Array.isArray(it.blocks) ? it.blocks : [];
+  return blocks
+    .filter((b) => b && b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text)
+    .join("\n");
+}
+
+/** Load the session's own thread into the (already cleared) pane, so a switch and a reload show it. */
+async function loadHistory() {
+  if (!chat.sessionId) return;
+  try {
+    const r = await v1Json("GET", messagePath("transcript"));
+    if (!r.ok) return;
+    const items = r.json && Array.isArray(r.json.items) ? r.json.items : [];
+    for (const it of items) {
+      const text = transcriptItemText(it);
+      if (!text) continue;
+      if (it.kind === "user") addMessage("you", text);
+      else if (it.kind === "assistant") addMessage("desk", text);
+    }
+  } catch {
+    /* the pane stays empty rather than showing another project's thread */
+  }
+}
+
 function setChatWhere(slug) {
   const el = pane("chat-where");
   if (!el) return;
@@ -132,6 +167,8 @@ function setChatWhere(slug) {
 async function ensureChat(slug) {
   if (!slug) return false;
   if (chat.slug === slug && chat.sessionId) return true;
+  // A switch: empty the pane first, so the previous project's thread cannot survive into this one.
+  clearChat();
   setChatWhere(slug);
   try {
     if (!chat.device) {
@@ -158,6 +195,8 @@ async function ensureChat(slug) {
     chat.slug = slug;
     chat.sessionId = id;
     chat.downShown = false;
+    // Then show this project's own thread, if it has one. A reload lands here too.
+    await loadHistory();
     return true;
   } catch {
     return backendDown();
@@ -430,7 +469,7 @@ async function drawCentre() {
   } else if (state.page === "record") {
     body.append(renderRecord(data));
   } else if (state.page === "inbox") {
-    body.append(renderInbox(data));
+    body.append(renderInbox(data, slug));
   } else if (state.page === "receipts") {
     body.append(renderReceipts(data));
   } else if (state.page === "egress") {
