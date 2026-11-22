@@ -8,9 +8,16 @@
 // Its own isolation: backend port 4790, shell port 4791, DPI_HOME=~/.dpi-desk, DESK_ROOT
 // (default ~/Desk, the fixture inside the clone during development). It generates its own local
 // token if there is none, and never prints it.
+//
+// The action log (SPEC-action-log-2026-11-21.md §8). The shell already sees every action that
+// matters — a new session, a message, a stop, a view fetch — and the reply it sent back, so it
+// writes the log itself: one append-only JSON object per line at $DPI_HOME/actions.jsonl, private
+// mode, `source` real unless started with DESK_ACTION_SOURCE=sandbox. Four actions, a closed set;
+// nothing else writes a line, and no line carries anything a person typed. The log is a shadow: if
+// it cannot be written the desk answers exactly as before.
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { sameOriginHeaders, serveRequest } from "./static.js";
@@ -101,6 +108,75 @@ function v1Route(method: string, target: string): RouteDecision {
   return { allow: false, status: 404 };
 }
 
+/**
+ * The action log. `$DPI_HOME/actions.jsonl`, one JSON object per line, append-only and private.
+ *
+ * A name in the log is a lower-case name of at most 32 characters and nothing else — no `..`, no
+ * `/`, no `%`, no upper case — so a project slug or a file name can never smuggle a path or a
+ * hostile string into the file. Anything else becomes `-` (project) or `other` (view).
+ */
+const ACTION_LOG = join(DPI_HOME, "actions.jsonl");
+const ACTION_SOURCE = process.env.DESK_ACTION_SOURCE === "sandbox" ? "sandbox" : "real";
+const LOG_NAME = /^[a-z0-9-]{1,32}$/;
+
+type ActionName = "new-session" | "send" | "stop" | "open-view";
+type Action = { action: ActionName; project: string; view?: string };
+
+/**
+ * The action a request is, or `null` if it is not one of the four. Read from the same raw request
+ * target the router uses: nothing is decoded, so a hostile name stays visible and is judged above.
+ *   POST /v1/sessions                        -> new-session
+ *   POST /v1/sessions/:s/agents/:a/messages  -> send
+ *   POST /v1/sessions/:s/agents/:a/abort     -> stop
+ *   GET  /desk/**\/views/<name>.json         -> open-view (project = the slug after /desk/projects/)
+ * Every other request — the page, the assets, projects.json, any GET /v1/*, POST …/agents, anything
+ * the shell refuses — is not an action and writes nothing.
+ */
+function actionFor(method: string, target: string): Action | null {
+  const p = target.split("/");
+  if (method === "POST" && target === "/v1/sessions") return { action: "new-session", project: "-" };
+  if (method === "POST" && p.length === 7 && p[1] === "v1" && p[2] === "sessions" && p[4] === "agents" && (p[6] === "messages" || p[6] === "abort")) {
+    return { action: p[6] === "messages" ? "send" : "stop", project: "-" };
+  }
+  if (method === "GET" && p[1] === "desk" && p.length >= 4 && p[p.length - 2] === "views" && p[p.length - 1].endsWith(".json")) {
+    const view = p[p.length - 1].slice(0, -5);
+    const project = p[2] === "projects" && p.length === 6 && LOG_NAME.test(p[3]) ? p[3] : "-";
+    return { action: "open-view", project, view: LOG_NAME.test(view) ? view : "other" };
+  }
+  return null;
+}
+
+/** Write one line. Never throws: the log may not break the desk. */
+function logAction(a: Action, status: number): void {
+  const line: Record<string, string | number> = {
+    time: new Date().toISOString(),
+    source: ACTION_SOURCE,
+    project: a.project,
+    action: a.action,
+  };
+  if (a.action === "open-view") line.view = a.view ?? "other";
+  line.outcome = status >= 200 && status < 300 ? "worked" : "failed";
+  line.status = status;
+  try {
+    appendFileSync(ACTION_LOG, JSON.stringify(line) + "\n", { mode: 0o600 });
+  } catch {
+    /* the log is a shadow: an unwritable log changes no reply */
+  }
+}
+
+/** The reply's status is the first `writeHead` — log it once, then leave the reply alone. */
+function logOnReply(res: ServerResponse, a: Action): void {
+  const original = res.writeHead.bind(res) as (...args: unknown[]) => ServerResponse;
+  let logged = false;
+  res.writeHead = ((...args: unknown[]) => {
+    if (!logged) {
+      logged = true;
+      logAction(a, Number(args[0]));
+    }
+    return original(...args);
+  }) as unknown as ServerResponse["writeHead"];
+}
+
 const token = deviceToken();
 
 const server = createServer((req, res) => {
@@ -141,14 +217,19 @@ function handle(req: IncomingMessage, res: ServerResponse): void {
     const route = v1Route(req.method ?? "GET", target);
     if (!route.allow) {
       // Off-list (or wrong method): the backend is never contacted. Decide on the raw target above,
-      // forward on the same raw target below — never on a normalised one.
+      // forward on the same raw target below — never on a normalised one. A refused route is not an
+      // action and writes no line, so the log is decided after the allowlist, never before it.
       res.writeHead(route.status, { "content-type": "text/plain" });
       res.end("not allowed");
       return;
     }
+    const action = actionFor(req.method ?? "GET", target);
+    if (action) logOnReply(res, action);
     proxy(req, res, token);
     return;
   }
+  const viewed = actionFor(req.method ?? "GET", target);
+  if (viewed) logOnReply(res, viewed);
   serveRequest(res, url.pathname, { webDir: WEB_DIR, deskRoot: DESK_ROOT });
 }
 
