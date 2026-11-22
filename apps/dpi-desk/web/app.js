@@ -52,7 +52,7 @@ const state = {
 // One session per project, named desk-<slug>. The page finds or creates it through /v1, sends a
 // message with a unique requestId and renders the settled answer as text. A failure is one plain
 // sentence in the right pane — never a status code, never the shell's 502 body, never in the centre.
-const chat = { device: null, slug: null, sessionId: null, agent: "main", busy: false, seq: 0, downShown: false };
+const chat = { device: null, slug: null, sessionId: null, agent: "main", busy: false, seq: 0 };
 
 /** The project the chat is about: the page in view, or the first project when none is selected. */
 function slugInView() {
@@ -85,11 +85,21 @@ function addNotice(text) {
   if (log) log.append(p);
 }
 
+const DOWN_TEXT = "The desk's assistant isn't running right now.";
+
+/** Is the sentence already on screen? The pane, not a flag beside it, is the state: a latch kept
+ *  somewhere else drifts every time the pane is emptied (bfaa11c) and then suppresses a real failure.
+ *  Asking the pane means a cleared pane re-arms the sentence, and a sentence already said is not said
+ *  twice — however many redraws, keystrokes or retries happen in between. */
+function downShownInPane() {
+  const log = chatLog();
+  if (!log) return false;
+  for (const n of log.querySelectorAll(".notice")) if (n.textContent === DOWN_TEXT) return true;
+  return false;
+}
+
 function backendDown() {
-  if (!chat.downShown) {
-    chat.downShown = true;
-    addNotice("The desk's assistant isn't running right now.");
-  }
+  if (!downShownInPane()) addNotice(DOWN_TEXT);
   return false;
 }
 
@@ -121,12 +131,10 @@ function pickCwd(device) {
 }
 
 /** Empty the chat pane. Called on every project switch, so one project's lines never sit under another's.
- * An empty pane invalidates the once-only latch too: the next backend failure must say its one plain
- * sentence, not be suppressed as "already told him" because an earlier pane was told. */
+ * Nothing else to do: the once-only latch lives in the pane, so emptying the pane re-arms it. */
 function clearChat() {
   const log = chatLog();
   if (log) put(log, null);
-  chat.downShown = false;
 }
 
 /** The text of one transcript item: `text` for a user line, the `text` blocks for an assistant one. */
@@ -197,7 +205,6 @@ async function ensureChat(slug) {
     if (!id) return backendDown();
     chat.slug = slug;
     chat.sessionId = id;
-    chat.downShown = false;
     // Then show this project's own thread, if it has one. A reload lands here too.
     await loadHistory();
     return true;
@@ -237,7 +244,6 @@ async function fallbackTranscript() {
 
 async function settled(text) {
   addMessage("desk", text);
-  chat.downShown = false;
   // A write may have landed a new ledger line: re-read the data files and re-render, no reload.
   await refreshDesk();
 }
@@ -274,6 +280,12 @@ async function send() {
       await settled(String(res.json.answer.text ?? ""));
     } else if (res.ok && res.json && res.json.status === "unanswered") {
       addMessage("desk", "The assistant didn't answer that one.");
+    } else if (!res.ok) {
+      // A reply that is not ok is a failure the same as a thrown error. The shell answers 502 for a
+      // dead backend, and a 502 is a *completed* fetch — it never lands in the catch below, so the
+      // failure has to be read off the reply. The transcript read is a long shot; the sentence is not.
+      await fallbackTranscript();
+      backendDown();
     } else {
       await fallbackTranscript();
     }
@@ -287,7 +299,8 @@ async function send() {
 async function stopChat() {
   if (!chat.sessionId) return;
   try {
-    await v1Json("POST", messagePath("abort"), {});
+    const res = await v1Json("POST", messagePath("abort"), {});
+    if (!res.ok) backendDown();
   } catch {
     backendDown();
   }
