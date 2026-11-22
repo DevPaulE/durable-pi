@@ -6,6 +6,11 @@ front end (`web/`) and the desk data root, and proxies `/v1/*` to the desk's own
 
 ## Run (one command)
 
+> **Known defect, and the workaround until it is fixed.** A thread that already existed when the desk
+> restarted loses its stored model and then never answers again — the page shows *"The assistant
+> didn't answer that one."* for that project. A brand-new thread on the same desk is fine.
+> **After a restart, open a new project thread.**
+
 ```sh
 apps/dpi-desk/start.sh          # both servers; Ctrl-C stops both
 ```
