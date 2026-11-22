@@ -1,4 +1,4 @@
-# capability.md — what the desk can and cannot do (revision 3: gates and checker rows as cites)
+# capability.md — what the desk can and cannot do (revision 4: gates and checker rows as cites; the local action log and its limits)
 
 Five columns, one row per capability. Rule 1: a "yes" row names the gate id or checker row that proves it (GREEN/PASS at head, commit `06dff94`); a capability with no gate and no checker row reads `unproven`. Rule 2: a failure rate is a measured figure with its run, or the literal word `unmeasured`. Rule 3: a "no" row names its alternative.
 
@@ -30,8 +30,9 @@ Five columns, one row per capability. Rule 1: a "yes" row names the gate id or c
 | Refuse to be shown inside another page's frame | no | a foreign page can frame `/desk/*` and `GET /v1/*` and steer a click onto Send; it cannot read the reply. Alternative: narrow the exemption to `/` and the assets | V16-1 low card; measured: `/desk/<file>` returns 200 under a cross-site frame | V16-1 (card); cos/review/verifier/round16/AUDIT-LANDINGS-2026-11-21.md:38 |
 | Have a rented model pick a read path unprompted | unproven | the read path is never chosen by a real model: F1 was driven by a loopback stub, never a real provider turn | unmeasured | mvp/CLOSE-2026-11-20.md:98 (no real-provider F1 turn); no gate and no checker row covers it |
 | Press Stop and have it stop | yes | G70 STOP-SENT / STOP-SESSION / STOP-FREES / STOP-QUIET / STOP-DOWN GREEN, 7 checks at 06dff94 | before the pin it was never clicked; unmeasured | G70 (stop-stops-the-turn-on-screen, GREEN at 06dff94); mvp/RUNLOG.md:331 |
-| Measure how often users ask for the impossible | no | the product does not phone home. Alternative: the gate plants the question | unmeasured | SPEC-capability-2026-11-21.md:205 ("§8, no telemetry") |
+| Measure how often users ask for the impossible | no | the product never phones home. It now writes a local action log at `$DPI_HOME/actions.jsonl` (append-only, never served) so it can count its own actions, but it asks the user nothing. Alternative: the gate plants the question | unmeasured | SPEC-capability-2026-11-21.md:205 ("§8, no telemetry") |
 | Generate the failure-rate column from the logs | no | v0 is hand-authored and cited. Alternative: the suite's own rows | unmeasured | SPEC-capability-2026-11-21.md:200 ("§8, no generated table") |
+| Log a request whose path is percent-encoded | no | the log matches the raw path while the file server serves the decoded one, so `/desk/%76iews/brief.json` is served and writes no line. The page never sends such a path. Alternative: none reachable from the page | unmeasured | cos/review/verifier/round23/AUDIT-WO18-2026-11-21.md:24 |
 
 
-<!-- generated 2026-11-21 19:48:20 PST; revision 3: three verifier round-21 row fixes and four added rows; no self-count here — canonical row and byte counts live in NOTES.md §3 -->
+<!-- generated 2026-11-21 22:5x PST; revision 4: §8 and the "measure how often" row trued up for the local action log, plus the V23-2 encoded-path limit as a row; no self-count here — canonical row and byte counts live in NOTES.md §3 -->
