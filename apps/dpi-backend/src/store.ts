@@ -318,20 +318,30 @@ export class Store {
   routedModel(model?: ModelRef): ModelRef {
     // A stored choice on a registered provider is kept as-is. This is what stops a Faux session
     // being silently re-pointed at a paid provider when this device's default provider changes.
-    if (
-      model &&
-      (this.providers as readonly string[]).includes(model.provider) &&
-      this.models.getModel(model.provider, model.modelId)
-    )
+    const registered = !!model && (this.providers as readonly string[]).includes(model.provider);
+    if (registered && this.models.getModel(model.provider, model.modelId))
       return { provider: model.provider, modelId: model.modelId };
     const provider = this.options.provider;
-    if (provider === "faux") return { provider: "faux", modelId: fauxModels[0].id };
-    if (provider === "openrouter") {
-      const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
-      const fallback = this.modelList.find((m) => m.provider === "openrouter")?.id ?? "";
-      return { provider: "openrouter", modelId: curatedModels.some((m) => m.id === exact) ? exact : fallback };
-    }
-    return { provider, modelId: this.modelList.find((m) => m.provider === provider)?.id ?? "" };
+    const exact = model?.provider === "openrouter" ? model.modelId : `${model?.provider}/${model?.modelId}`;
+    const chosen: ModelRef =
+      provider === "faux"
+        ? { provider: "faux", modelId: fauxModels[0].id }
+        : provider === "openrouter"
+          ? {
+              provider: "openrouter",
+              modelId: curatedModels.some((m) => m.id === exact)
+                ? exact
+                : this.modelList.find((m) => m.provider === "openrouter")?.id ?? "",
+            }
+          : { provider, modelId: this.modelList.find((m) => m.provider === provider)?.id ?? "" };
+    // An empty model id is not a routing decision. A dynamic catalog (Ollama, Radius) is only
+    // fetched by loadModels(), which runs AFTER the stored sessions are opened, so on a restart the
+    // lookup above has not had its refresh and misses a model the endpoint does publish. Returning
+    // `{ modelId: "" }` there did not fail closed: resume wrote it back, and the thread could never
+    // answer again (G77/G78). A stored model on a registered provider is left exactly as it is.
+    if (!chosen.modelId && model && registered && model.modelId)
+      return { provider: model.provider, modelId: model.modelId };
+    return chosen;
   }
 
   validateModel(model: unknown): ModelRef {

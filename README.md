@@ -9,6 +9,8 @@
   <img src="images/01_durable_agent_network.svg" alt="Three clients (web UI, dpi-tui, curl) reach durable agents on four devices; the clients disconnect and every device keeps checkpointing its run to SQLite" width="850">
 </p>
 
+> **This branch also carries the desk.** `apps/dpi-desk` is the chief-of-staff desk shell: a second local server, a three-pane page and a chat thread per project, with its own data root and its own ports (`4790`/`4791`). It is built on this backend and documented on its own — start at [`apps/dpi-desk/README.md`](apps/dpi-desk/README.md).
+
 [Pi Durable](https://earendil.com/posts/pi-durable/), from the team behind the [Pi coding agent](https://github.com/earendil-works/pi), persists ongoing work, conversations and application state through failures, through clients and through change itself. This repo puts it to work. Every device runs a small server, `dpi-backend`, that owns its agents, their SQLite databases and their tools. Clients connect with a **URL and a bearer token**: a web hub that watches every device at once, `dpi-tui` in the terminal, or one `curl` that sends work and waits for the answer. **The agent lives on the device, not in the client.** Close the browser, quit the terminal or restart the machine mid-tool, and the run picks up from its last checkpoint.
 
 ---

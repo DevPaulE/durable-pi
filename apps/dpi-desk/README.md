@@ -1,24 +1,41 @@
 # dpi-desk — the desk shell (slice 1)
 
 The second local server of the chief-of-staff desk (SPEC cos-app v1.1 §13a, option B). It serves the
-front end (`web/`) and the desk data root, and proxies `/v1/*` to the desk's own backend on
+three-pane page (`web/`) and the desk data root, and proxies `/v1/*` to the desk's own backend on
 `127.0.0.1:4790`, holding the device token server-side so the browser never does.
 
 ## Run (one command)
 
-> **Known defect, and the workaround until it is fixed.** A thread that already existed when the desk
-> restarted loses its stored model and then never answers again — the page shows *"The assistant
-> didn't answer that one."* for that project. A brand-new thread on the same desk is fine.
-> **After a restart, open a new project thread.**
-
 ```sh
-apps/dpi-desk/start.sh          # both servers; Ctrl-C stops both
+npm install --prefix apps/dpi-backend   # once: the backend's dependencies, and the tsx the shell runs under
+apps/dpi-desk/start.sh                  # both servers; Ctrl-C stops both
 ```
 
 Open <http://127.0.0.1:4791/>.
 
-Overridable: `DESK_DPI_HOME` (default `~/.dpi-desk`) and `DESK_ROOT` (default `~/Desk`; the dev
-recipe uses `fixtures/desk` inside the clone).
+Overridable: `DESK_DPI_HOME` (default `~/.dpi-desk`; the shell's token, the backend's catalog and its
+App State live there) and `DESK_ROOT` (the desk's data root; `start.sh` defaults it to
+`fixtures/desk` inside the clone — it reads and creates no other directory).
+
+### The recipe for a local model — free, loopback, no account
+
+Four lines in `$DESK_DPI_HOME/backend.env` put a loopback Ollama behind the desk:
+
+```sh
+DPI_PROVIDER=ollama
+OLLAMA_BASE_URL=http://127.0.0.1:11434/v1
+OLLAMA_API_KEY=<any non-empty>
+OLLAMA_DEFAULT_MODEL=gemma4:12b-ctx32k
+```
+
+`OLLAMA_API_KEY` is ignored by a local Ollama — the value is never checked, so **any non-empty string
+will do**; it exists only because the provider's shape wants one. `OLLAMA_DEFAULT_MODEL` names the
+model a *new* thread gets; the rest of the catalog is read from the endpoint's own `/v1/models`, so
+every model Ollama has pulled appears in the device's model list (`GET /v1/device` lists them). No
+key, or an endpoint that does not answer, leaves that provider's catalog empty and the desk stays on
+the stand-in `faux/echo` model — the page carries no word saying so, which is a known gap. Naming
+the provider in the file is enough: `start.sh` leaves the file's own `DPI_PROVIDER` alone and never
+pins the desk to `faux`.
 
 **Why a script and not two commands.** Agent shells on this host export the hub's `DPI_*`
 (`DPI_TOKEN`, `DPI_PORT=4780`, `DPI_PROVIDER`, `DPI_HOME`, `DPI_START_DIRS`, `DPI_HOST`,
@@ -31,13 +48,36 @@ first, so the desk's own env file is the only source of the desk's configuration
 shell under `tsx`: `node apps/dpi-desk/server.ts` exits `ERR_MODULE_NOT_FOUND` because the shell's
 `import "./static.js"` is not remapped to `static.ts`.
 
-Isolation: backend `4790`, shell `4791`, `DESK_DPI_HOME=~/.dpi-desk`, `DESK_ROOT` default `~/Desk`.
-The shell owns the token: it reads `$DESK_DPI_HOME/backend.env`, or generates one and writes it
-`0600`, and it never prints it. The backend starts after the shell for that reason. It makes no call
-except the local `/v1` proxy.
+Isolation: backend `4790`, shell `4791`, `DESK_DPI_HOME=~/.dpi-desk`, `DESK_ROOT` default
+`fixtures/desk`. The shell owns the token: it reads `$DESK_DPI_HOME/backend.env`, or generates one
+and writes it `0600`, and it never prints it. The backend starts after the shell for that reason. It
+makes no call except the local `/v1` proxy.
 
-`web/` is a **placeholder**: one plain page that lists the projects and prints each data file. The
-three-pane front end is a later artifact.
+## The page
+
+Three panes, plain files under `web/` — no build step, no framework, served straight off disk:
+
+- **Left — projects.** Every project the data root holds.
+- **Centre — the selected project**, as tabs: *Where we left off*, *Ledger*, *Inbox*, *Receipts*,
+  *What left*. Each page is read from the data root on request; nothing is cached across a restart.
+- **Right — chat.** The thread that belongs to the selected project: its transcript, a Send box, and
+  Stop for a turn that is still running. A failed send, a failed Stop and an unanswered turn all say
+  the one sentence: *"The desk's assistant isn't running right now."*
+
+## Uninstall
+
+The desk creates two things of its own — `$DESK_DPI_HOME` (default `~/.dpi-desk`) and whatever
+`DESK_ROOT` it was pointed at (`fixtures/desk` inside the clone by default):
+
+```sh
+rm -rf ~/.dpi-desk
+rm -rf fixtures/desk        # only if DESK_ROOT is still the default
+```
+
+That is all of the desk's own state: the token, the session catalog, the per-session `agent.sqlite`
+databases and the desk's data root. `npm install` also leaves packages in npm's shared cache
+(`~/.npm`), the same as any other install. The backend additionally creates its default agent start
+dir, `~/dpi-work`, on first start; nothing removes it.
 
 ## The guard is the second layer, not the wall
 
