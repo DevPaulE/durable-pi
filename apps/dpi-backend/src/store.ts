@@ -397,6 +397,8 @@ export class Store {
 
   // ------------------------------------------------------------ sessions
 
+  private createChains = new Map<string, Promise<unknown>>();
+
   list(): SessionRow[] {
     return this.catalog.prepare("SELECT * FROM sessions ORDER BY createdAt DESC").all() as SessionRow[];
   }
@@ -405,6 +407,56 @@ export class Store {
     const row = this.catalog.prepare("SELECT * FROM sessions WHERE id=?").get(id) as SessionRow | undefined;
     if (!row) throw notFound(`No session ${id}`);
     return row;
+  }
+
+  /**
+   * The thread that already owns this exact name, newest first.
+   *
+   * Exact, not case-folded — and deliberately a different rule from `resolveSession()`, which is
+   * case-insensitive and so calls two sessions whose names differ only in case "ambiguous". That is
+   * the catalog's existing, pinned behaviour; this one matches what the page itself does when it goes
+   * looking for a project's thread (`s.name === name`).
+   */
+  private sessionNamed(name: string): SessionRow | undefined {
+    return this.catalog.prepare("SELECT * FROM sessions WHERE name=? ORDER BY createdAt DESC LIMIT 1").get(name) as
+      | SessionRow
+      | undefined;
+  }
+
+  /** Reuse the thread this exact name already belongs to; only make a new one when nothing owns it. */
+  private async reconcileName(name: string, create: () => Promise<SessionSummary>): Promise<SessionSummary> {
+    const existing = this.sessionNamed(name);
+    return existing ? this.sessionSummary(existing) : create();
+  }
+
+  /**
+   * One create per name at a time, with the reconcile *inside* the lock.
+   *
+   * Two tabs on one project each find no thread and each ask for one. They are two requests landing
+   * in the same instant, and neither can see the other, so the server has to close the race: the
+   * second create waits for the first and is then answered with the thread the first one made — same
+   * id, 2xx. Checking before the lock would be a check both of them pass; refusing the second with a
+   * 4xx would be worse than the bug, because the page reads a failed create as the backend being
+   * down.
+   *
+   * Two *different* names are two chains that never wait for each other, so asking for several
+   * threads at once still gets several threads.
+   */
+  private createOnce(name: string, create: () => Promise<SessionSummary>): Promise<SessionSummary> {
+    const previous = this.createChains.get(name) ?? Promise.resolve();
+    const run = previous.then(
+      () => this.reconcileName(name, create),
+      () => this.reconcileName(name, create),
+    );
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.createChains.set(name, settled);
+    void settled.then(() => {
+      if (this.createChains.get(name) === settled) this.createChains.delete(name);
+    });
+    return run;
   }
 
   /** A session by UUID or unique case-insensitive name. */
@@ -442,30 +494,33 @@ export class Store {
     const model = this.validateModel(body.model);
     if (body.thinkingLevel !== undefined && !THINKING_LEVELS.includes(body.thinkingLevel))
       throw invalid("Invalid thinking level");
-    const id = randomUUID();
-    const row: SessionRow = {
-      id,
-      name: body.name.trim().slice(0, 100) || "Untitled session",
-      cwd,
-      dbPath: join(this.sessionsDir, id, "agent.sqlite"),
-      createdAt: Date.now(),
-      model: model.modelId,
-      provider: model.provider,
-    };
-    await this.openAgent(row, true, body.thinkingLevel ?? "low");
-    this.catalog.exec("BEGIN");
-    try {
-      this.catalog
-        .prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,?)")
-        .run(id, row.name, cwd, row.dbPath, row.createdAt, row.model, row.provider);
-      if (spawnKey) this.catalog.prepare("INSERT OR REPLACE INTO session_spawns VALUES(?,?)").run(spawnKey, id);
-      this.catalog.exec("COMMIT");
-    } catch (e) {
-      this.catalog.exec("ROLLBACK");
-      throw e;
-    }
-    this.notify();
-    return this.sessionSummary(row);
+    const name = body.name.trim().slice(0, 100) || "Untitled session";
+    return this.createOnce(name, async () => {
+      const id = randomUUID();
+      const row: SessionRow = {
+        id,
+        name,
+        cwd,
+        dbPath: join(this.sessionsDir, id, "agent.sqlite"),
+        createdAt: Date.now(),
+        model: model.modelId,
+        provider: model.provider,
+      };
+      await this.openAgent(row, true, body.thinkingLevel ?? "low");
+      this.catalog.exec("BEGIN");
+      try {
+        this.catalog
+          .prepare("INSERT INTO sessions VALUES(?,?,?,?,?,?,?)")
+          .run(id, row.name, cwd, row.dbPath, row.createdAt, row.model, row.provider);
+        if (spawnKey) this.catalog.prepare("INSERT OR REPLACE INTO session_spawns VALUES(?,?)").run(spawnKey, id);
+        this.catalog.exec("COMMIT");
+      } catch (e) {
+        this.catalog.exec("ROLLBACK");
+        throw e;
+      }
+      this.notify();
+      return this.sessionSummary(row);
+    });
   }
 
   /**

@@ -40,6 +40,22 @@ body {
   flex: none;
 }
 
+/* The stand-in sentence. It is the page's own statement about the model, above every pane, so it
+   cannot be scrolled away or hidden inside a collapsed one — and it takes no room at all when the
+   desk is on a real model, because then it says nothing. */
+#model-note {
+  flex: none;
+  margin: 0;
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  background: color-mix(in srgb, #d9822b 22%, transparent);
+  font-size: 0.86rem;
+}
+
+#model-note:empty {
+  display: none;
+}
+
 #layout {
   display: flex;
   flex: 1 1 auto;

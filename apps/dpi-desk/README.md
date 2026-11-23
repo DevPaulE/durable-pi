@@ -6,7 +6,12 @@ three-pane page (`web/`) and the desk data root, and proxies `/v1/*` to the desk
 
 ## Run (one command)
 
+The desk lives on its own branch. Clone that branch, then run it from the clone:
+
 ```sh
+git clone --branch desk-slice-1 https://github.com/DevPaulE/durable-pi
+cd durable-pi
+
 npm install --prefix apps/dpi-backend   # once: the backend's dependencies, and the tsx the shell runs under
 apps/dpi-desk/start.sh                  # both servers; Ctrl-C stops both
 ```

@@ -130,6 +130,26 @@ function pickCwd(device) {
   return dirs[0] || (device && device.codeDir) || ".";
 }
 
+const STANDIN_TEXT =
+  "No real model is reachable, so this desk is on its stand-in model (faux/echo): it echoes instead " +
+  "of thinking. Answers are still recorded, but no model read what you asked.";
+
+/**
+ * Say when the desk is on the stand-in, and say nothing when it is not.
+ *
+ * The device's `defaultModel` is the model every new thread is created with, so the provider that
+ * model is published under is the whole answer: `faux` means the desk never reached a real one. This
+ * is deliberately not a banner — a sentence that is always on screen would say nothing at all — and
+ * it is read from `/v1/device`, the same read `ensureChat` makes, not guessed at from the page.
+ * A failed read says nothing here: the backend-down sentence is the honest thing to say then, and
+ * `backendDown()` is what says it.
+ */
+function renderModelNote(device) {
+  const el = pane("model-note");
+  if (!el || !device) return;
+  el.textContent = pickModel(device).provider === "faux" ? STANDIN_TEXT : "";
+}
+
 /** Empty the chat pane. Called on every project switch, so one project's lines never sit under another's.
  * Nothing else to do: the once-only latch lives in the pane, so emptying the pane re-arms it. */
 function clearChat() {
@@ -517,10 +537,19 @@ function wireToggles() {
 async function main() {
   wireToggles();
   wireChat();
+  // The device read is started before anything else and awaited before the page is done, because
+  // the model note must not depend on a project existing: an empty desk is exactly the case where
+  // the stand-in matters most. `ensureChat` reuses whatever this resolves with.
+  const reading = v1Json("GET", "/v1/device");
   state.index = await readJson("projects.json");
   state.brief = await readJson("views/brief.json");
   renderNav();
   await drawCentre();
+  const device = await reading;
+  if (device.ok) {
+    chat.device = device.json;
+    renderModelNote(device.json);
+  }
   // No click at all still ends with a live chat target.
   await ensureChat(slugInView());
 }
