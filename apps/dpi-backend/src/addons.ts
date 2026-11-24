@@ -16,7 +16,7 @@ import { Type } from "typebox";
 import type { HarnessExtensionInfo } from "../../dpi-sdk/src/api.js";
 import { askJev, type JevAnswer, type JevQuestion } from "./jev.js";
 import { damageReport, findPassage, getBook, loadRegister, readExtract, registerPath, type Book } from "./canon.js";
-import { createDeskAddon } from "./desk-addon.js";
+import { createDeskAddon, deskAddon } from "./desk-addon.js";
 
 const PROMPTS_DIR = join(import.meta.dirname, "../prompts");
 
@@ -405,8 +405,9 @@ export function createAddons(opts: { offline: boolean; threadName?: () => string
   });
   const canon = createBookCanon();
   // The desk add-on belongs to a thread, not to the process: `ledger_add` writes to the project the
-  // *calling* thread belongs to, and one backend serves every project's thread at once.
-  const desk = createDeskAddon(opts.threadName ? { threadName: opts.threadName } : {});
+  // *calling* thread belongs to, and one backend serves every project's thread at once. With no
+  // thread named, the module's own `deskAddon` is the instance, so there is exactly one of them.
+  const desk = opts.threadName ? createDeskAddon({ threadName: opts.threadName }) : deskAddon;
   const all: Record<string, Extension> = { "system-prompts": prompts, "jev-damage-control": jev, "book-canon": canon, desk };
   return { all, list: [prompts, jev, canon, desk] };
 }

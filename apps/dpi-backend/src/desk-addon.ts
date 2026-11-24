@@ -1085,3 +1085,17 @@ export function createDeskAddon(opts: { threadName?: () => string | undefined } 
     ],
   });
 }
+
+/**
+ * The desk add-on as this module has always handed it out: one built `Extension`, with `ledger_add`
+ * among its tools and its `beforeTool` read-confinement filter registered.
+ *
+ * It is the instance with no thread bound to it, so a write falls back to the slug the caller named —
+ * the behaviour `ledger_add` had before the thread became the authority. The store does not install
+ * *this* object; it builds one per thread with `createDeskAddon({ threadName })`, because one backend
+ * serves every project's thread at once. It stays exported because the add-on's own shape is part of
+ * this module's surface: anything that imports the module to read the registered tool or the
+ * registered guard — the desk's gate suite has since the filter existed — gets the shape it always
+ * had. `createAddons` hands this same object back whenever it is given no thread.
+ */
+export const deskAddon: Extension = createDeskAddon();
