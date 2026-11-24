@@ -210,6 +210,8 @@ async function ensureChat(slug) {
     const sessions = await v1Json("GET", "/v1/sessions");
     if (!sessions.ok) return backendDown();
     const list = Array.isArray(sessions.json) ? sessions.json : [];
+    // The name is the contract with `ledger_add`: the backend reads a write's project out of it, so a
+    // line added from this thread lands in this project whatever the model names in its own argument.
     const name = "desk-" + slug;
     let session = list.find((s) => s && s.name === name);
     if (!session) {

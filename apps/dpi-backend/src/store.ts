@@ -224,6 +224,7 @@ export class Store {
       if (!(await store.shared.initialized()))
         await store.shared.initialize({ goal: "Explore durable agents", counter: 0, notes: [] });
       store.modelList = await store.loadModels();
+      await store.rerouteUnavailableModels();
       for (const { harness } of store.opened.values()) harness.resume();
       return store;
     } catch (e) {
@@ -313,6 +314,45 @@ export class Store {
       rows.push(...modelInfos(provider, available.map(asRow)));
     }
     return rows;
+  }
+
+  /**
+   * Move every open thread whose stored model this device no longer offers onto one it does.
+   *
+   * A thread is stored with the model it was made on, and the harness resolves that model on every
+   * request: once the provider stops offering it, `getModel` returns nothing, the run settles
+   * `unanswered` with `no_model`, and the thread can never answer again — not on the next message,
+   * not ever, because nothing else re-points it. A provider change therefore bricked every existing
+   * thread, silently, and the page reported it as the assistant having nothing to say.
+   *
+   * This runs *after* `loadModels()`, and that ordering is the whole point. `openAgent()` cannot do
+   * it: on a restart the stored sessions are opened before the catalog is fetched, so for a dynamic
+   * provider `getModel` knows nothing yet and `routedModel()` deliberately keeps the stored model
+   * rather than overwrite it with an empty id. Once the catalog is loaded, the same question has a
+   * real answer, and a model missing from a catalog the provider just published is evidence, not
+   * ignorance. That asymmetry is the rule here: a thread is re-pointed only when its provider
+   * published models and the thread's model is not among them. If the provider published nothing at
+   * all the endpoint could not be reached, which is not evidence that the model is gone, so the
+   * thread keeps its model and is left to work again when the endpoint does.
+   */
+  private async rerouteUnavailableModels(): Promise<void> {
+    for (const [sessionId, opened] of this.opened) {
+      for (const record of await this.scanAll(opened.harness)) {
+        const conversation = await opened.harness.conversation(record.id, ctx);
+        if (!conversation) continue;
+        const current = (await conversation.agent(ctx)).model;
+        if (!current || this.models.getModel(current.provider, current.modelId)) continue;
+        const routed = this.routedModel(current);
+        // `routedModel` hands the stored model back when it has nothing better to offer; that is not
+        // a re-point, and writing it would only bump the conversation revision.
+        if (routed.provider === current.provider && routed.modelId === current.modelId) continue;
+        await conversation.configure({ model: routed }, ctx);
+        // The catalog row is a cached copy of the root agent's model; keep it honest, as `configure()`
+        // does for a model chosen by hand.
+        if ((record.id as number) === 1)
+          this.catalog.prepare("UPDATE sessions SET provider=?,model=? WHERE id=?").run(routed.provider, routed.modelId, sessionId);
+      }
+    }
   }
 
   routedModel(model?: ModelRef): ModelRef {
@@ -407,6 +447,18 @@ export class Store {
     const row = this.catalog.prepare("SELECT * FROM sessions WHERE id=?").get(id) as SessionRow | undefined;
     if (!row) throw notFound(`No session ${id}`);
     return row;
+  }
+
+  /**
+   * A thread's name as it is now.
+   *
+   * Read from the catalog rather than from the row the harness was opened with: renaming a thread is
+   * the one mutation a session has, and the name is what says which project the thread belongs to, so
+   * a rename has to be honoured by the write that follows it.
+   */
+  private nameOf(sessionId: string): string | undefined {
+    const row = this.catalog.prepare("SELECT name FROM sessions WHERE id=?").get(sessionId) as { name: string } | undefined;
+    return row?.name;
   }
 
   /**
@@ -600,7 +652,12 @@ export class Store {
       const playground = createPlayground(this.shared, row.id, this.spawnSession, jobs);
       registry.install(playground);
       // Custom extensions are installed but not selected: an agent turns them on in its own selection.
-      const addons = createAddons({ offline: this.options.provider === "faux" });
+      const addons = createAddons({
+        offline: this.options.provider === "faux",
+        // The desk add-on writes to the project of the thread it was called from, and a thread says
+        // that with its name (`desk-<slug>`). This is the one place that binds the two together.
+        threadName: () => this.nameOf(row.id),
+      });
       for (const extension of addons.list) registry.install(extension);
       // A desk conversation is one on a backend running as the desk — the one whose data root
       // `DESK_ROOT` names, the same variable the desk add-on itself reads. There, the ledger writer

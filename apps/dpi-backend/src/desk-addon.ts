@@ -923,33 +923,68 @@ export function guardToolCall(toolName: string, args: Record<string, unknown> | 
 
 const ALLOWED_TOOLS = new Set(["ledger_add", "read"]);
 
+/**
+ * The project a thread belongs to, read from the thread's own name: the page names a project's thread
+ * `desk-<slug>`, so the thread itself says which project it belongs to. A thread that is not a
+ * project's thread has no project, and `ledger_add` then falls back to the slug the caller named.
+ *
+ * The other half of this pair is `ensureChat()` in `apps/dpi-desk/web/app.js`, which is what writes
+ * that name. The two are a contract: change one and the binding between a page and its project is
+ * silently lost, so `ledger_add` goes back to trusting whatever the model typed.
+ */
+export function slugFromThreadName(name: string | undefined): string | undefined {
+  const m = /^desk-([a-z0-9-]{1,64})$/.exec(String(name ?? "").trim());
+  return m ? m[1] : undefined;
+}
+
+/**
+ * Where a write made from this thread goes.
+ *
+ * The thread is the authority, not the model's argument. A model that has the project name wrong — or
+ * that invents one, which is what put a person's entry in a project they were not looking at and made
+ * that project exist — cannot move the line: it is appended to the ledger of the thread the request
+ * was made from, which is the project the page is showing. Only a thread with no project of its own
+ * (not created by the page) falls back to the argument, so `ledger_add` outside a project thread
+ * behaves as it did.
+ */
+function targetSlug(threadName: () => string | undefined, arg: unknown): string {
+  const fromThread = slugFromThreadName(threadName());
+  if (fromThread) return fromThread;
+  return typeof arg === "string" ? arg.trim() : "";
+}
+
 /** The desk root the tool writes to; the fixture lives inside the clone during development. */
 const deskRoot = () => process.env.DESK_ROOT ?? join(homedir(), "Desk");
 
-const ledgerAddTool = defineTool({
-  name: "ledger_add",
-  description:
-    "Add one dated, sourced line to a project's ledger. The only writer of log.jsonl and state.json. Refuses a line with no real date, no date-bearing source, an out-of-enum kind, or a date earlier than its source date. A refused line is never written to the ledger.",
-  parameters: Type.Object({
-    project: Type.String({ description: "The project slug (its folder under the desk root)." }),
-    text: Type.String({ description: "The line itself." }),
-    date: Type.Optional(Type.String({ description: "The line's date, YYYY-MM-DD." })),
-    source: Type.Optional(Type.String({ description: "Where the line came from; must name its own date." })),
-    kind: Type.Optional(Type.String({ description: "decision | open | follow_up | note" })),
-    name: Type.Optional(Type.String({ description: "The project's display name." })),
-    closes: Type.Optional(Type.String({ description: "The id of the open item or follow-up this line closes." })),
-  }),
-  replay: "safe",
-  execute: async (args, api) => {
-    const root = deskRoot();
-    const a = args as Record<string, unknown>;
-    const result = ledgerAdd(a as Line, { root, slug: String(a.project), name: a.name as string | undefined });
-    if (!result.ok) return { content: [{ type: "text" as const, text: `refused: ${result.reason}` }] };
-    touchProject(api.conversationId, String(a.project));
-    deriveViews(root, String(a.project));
-    return { content: [{ type: "text" as const, text: `added to ${String(a.project)}` }] };
-  },
-});
+/** `ledger_add` for one thread. The thread's name is read at call time, so a rename is honoured. */
+const ledgerAddTool = (threadName: () => string | undefined) =>
+  defineTool({
+    name: "ledger_add",
+    description:
+      "Add one dated, sourced line to the ledger of the project this thread belongs to. The line is recorded in the thread's own project, whatever `project` says, so there is no need to name a project. The only writer of log.jsonl and state.json. Refuses a line with no real date, no date-bearing source, an out-of-enum kind, or a date earlier than its source date. A refused line is never written to the ledger.",
+    parameters: Type.Object({
+      project: Type.Optional(
+        Type.String({ description: "Ignored for a project's thread: the line goes to that project. The fallback slug for a thread that is not a project's own." }),
+      ),
+      text: Type.String({ description: "The line itself." }),
+      date: Type.Optional(Type.String({ description: "The line's date, YYYY-MM-DD." })),
+      source: Type.Optional(Type.String({ description: "Where the line came from; must name its own date." })),
+      kind: Type.Optional(Type.String({ description: "decision | open | follow_up | note" })),
+      name: Type.Optional(Type.String({ description: "The project's display name." })),
+      closes: Type.Optional(Type.String({ description: "The id of the open item or follow-up this line closes." })),
+    }),
+    replay: "safe",
+    execute: async (args, api) => {
+      const root = deskRoot();
+      const a = args as Record<string, unknown>;
+      const slug = targetSlug(threadName, a.project);
+      const result = ledgerAdd(a as Line, { root, slug, name: a.name as string | undefined });
+      if (!result.ok) return { content: [{ type: "text" as const, text: `refused: ${result.reason}` }] };
+      touchProject(api.conversationId, slug);
+      deriveViews(root, slug);
+      return { content: [{ type: "text" as const, text: `added to ${slug}` }] };
+    },
+  });
 
 // ---------------------------------------------------------------- receipts and egress per turn (§10, §11)
 //
@@ -1003,42 +1038,50 @@ function flushTurn(conversationId: unknown, answer: { stopReason?: string }): vo
   }
 }
 
-/** The extension `addons.ts` registers: `ledger_add`, plus the guard wired as a `beforeTool` hook. */
-export const deskAddon: Extension = defineExtension({
-  name: "desk",
-  tools: [ledgerAddTool],
-  hooks: [
-    hook(ToolTask, {
-      beforeTool: (call) => {
-        // Default deny: only the ledger's own writer and plain reads pass; an unknown tool is blocked.
-        if (!ALLOWED_TOOLS.has(call.name)) return { block: GUARD_REASON };
-        const v = guardToolCall(call.name, call.arguments as Record<string, unknown>, { root: deskRoot() });
-        if (v.block) return { block: v.reason ?? GUARD_REASON };
-        // The guard's own resolution is the one the tool must use; an unrewritten call keeps the model's
-        // arguments exactly as they were.
-        if (v.arguments === undefined) return undefined;
-        // A rewrite is the model's own arguments with one string replaced, so it is JSON by construction.
-        return { arguments: v.arguments };
-      },
-    }),
-    hook(GenerationTask, {
-      // A turn starts at its first request; its usage is the sum of the responses the provider returned.
-      beforeRequest: (_request, api) => {
-        const id = String(api.conversationId);
-        if (!turns.has(id)) turns.set(id, { startedAt: Date.now(), tokens: 0, cost: 0 });
-        return undefined;
-      },
-      afterResponse: (message, api) => {
-        const id = String(api.conversationId);
-        const turn = turns.get(id) ?? { startedAt: Date.now(), tokens: 0, cost: 0 };
-        turn.tokens += Number(message.usage?.totalTokens ?? 0);
-        turn.cost += Number(message.usage?.cost?.total ?? 0);
-        turns.set(id, turn);
-      },
-      onYield: (answer, api) => {
-        flushTurn(api.conversationId, answer);
-        return undefined;
-      },
-    }),
-  ],
-});
+/**
+ * The extension `addons.ts` registers: `ledger_add`, plus the guard wired as a `beforeTool` hook.
+ *
+ * It is built per conversation rather than once per process, because the project a write belongs to is
+ * the one the *thread* belongs to, and one backend serves every project's thread at once.
+ */
+export function createDeskAddon(opts: { threadName?: () => string | undefined } = {}): Extension {
+  const threadName = opts.threadName ?? (() => undefined);
+  return defineExtension({
+    name: "desk",
+    tools: [ledgerAddTool(threadName)],
+    hooks: [
+      hook(ToolTask, {
+        beforeTool: (call) => {
+          // Default deny: only the ledger's own writer and plain reads pass; an unknown tool is blocked.
+          if (!ALLOWED_TOOLS.has(call.name)) return { block: GUARD_REASON };
+          const v = guardToolCall(call.name, call.arguments as Record<string, unknown>, { root: deskRoot() });
+          if (v.block) return { block: v.reason ?? GUARD_REASON };
+          // The guard's own resolution is the one the tool must use; an unrewritten call keeps the model's
+          // arguments exactly as they were.
+          if (v.arguments === undefined) return undefined;
+          // A rewrite is the model's own arguments with one string replaced, so it is JSON by construction.
+          return { arguments: v.arguments };
+        },
+      }),
+      hook(GenerationTask, {
+        // A turn starts at its first request; its usage is the sum of the responses the provider returned.
+        beforeRequest: (_request, api) => {
+          const id = String(api.conversationId);
+          if (!turns.has(id)) turns.set(id, { startedAt: Date.now(), tokens: 0, cost: 0 });
+          return undefined;
+        },
+        afterResponse: (message, api) => {
+          const id = String(api.conversationId);
+          const turn = turns.get(id) ?? { startedAt: Date.now(), tokens: 0, cost: 0 };
+          turn.tokens += Number(message.usage?.totalTokens ?? 0);
+          turn.cost += Number(message.usage?.cost?.total ?? 0);
+          turns.set(id, turn);
+        },
+        onYield: (answer, api) => {
+          flushTurn(api.conversationId, answer);
+          return undefined;
+        },
+      }),
+    ],
+  });
+}

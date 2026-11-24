@@ -16,7 +16,7 @@ import { Type } from "typebox";
 import type { HarnessExtensionInfo } from "../../dpi-sdk/src/api.js";
 import { askJev, type JevAnswer, type JevQuestion } from "./jev.js";
 import { damageReport, findPassage, getBook, loadRegister, readExtract, registerPath, type Book } from "./canon.js";
-import { deskAddon } from "./desk-addon.js";
+import { createDeskAddon } from "./desk-addon.js";
 
 const PROMPTS_DIR = join(import.meta.dirname, "../prompts");
 
@@ -366,7 +366,7 @@ export const ADDON_INFO: Omit<HarnessExtensionInfo, "enabled" | "prompts">[] = [
   { name: "desk", title: "Desk ledger", description: "The per-project ledger: `ledger_add` is the only writer of log.jsonl and state.json, and the code that derives the desk's pages from them." },
 ];
 
-export function createAddons(opts: { offline: boolean }) {
+export function createAddons(opts: { offline: boolean; threadName?: () => string | undefined }) {
   const prompts = defineExtension({
     name: "system-prompts",
     sections: [
@@ -404,8 +404,11 @@ export function createAddons(opts: { offline: boolean }) {
     ],
   });
   const canon = createBookCanon();
-  const all: Record<string, Extension> = { "system-prompts": prompts, "jev-damage-control": jev, "book-canon": canon, desk: deskAddon };
-  return { all, list: [prompts, jev, canon, deskAddon] };
+  // The desk add-on belongs to a thread, not to the process: `ledger_add` writes to the project the
+  // *calling* thread belongs to, and one backend serves every project's thread at once.
+  const desk = createDeskAddon(opts.threadName ? { threadName: opts.threadName } : {});
+  const all: Record<string, Extension> = { "system-prompts": prompts, "jev-damage-control": jev, "book-canon": canon, desk };
+  return { all, list: [prompts, jev, canon, desk] };
 }
 
 export type Addons = ReturnType<typeof createAddons>;
