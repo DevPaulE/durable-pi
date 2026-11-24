@@ -956,6 +956,24 @@ function targetSlug(threadName: () => string | undefined, arg: unknown): string 
 /** The desk root the tool writes to; the fixture lives inside the clone during development. */
 const deskRoot = () => process.env.DESK_ROOT ?? join(homedir(), "Desk");
 
+/**
+ * An empty `closes` is an echo, not a target.
+ *
+ * `closes` is optional, and a model that has nothing to close will often fill it in anyway with `""`.
+ * `ledgerAdd` is right to refuse an empty string as a target — it names no item, and a write that
+ * claimed to close something unnamed would be worse — and it must keep refusing it, because that is
+ * the API's rule and G63 pins it. But this argument is model-generated, and a line that is complete
+ * and correct in every other respect was being refused whole, silently, over an empty echo: the
+ * person saw nothing written and the desk read as dead.
+ *
+ * So the tool normalises that one case on the way in: an empty or whitespace-only string is absent.
+ * Nothing else is touched. A number, `null`, an object or an array is a malformed target rather than
+ * an empty one, and keeps being refused exactly as before.
+ */
+function closingTarget(value: unknown): unknown {
+  return typeof value === "string" && value.trim() === "" ? undefined : value;
+}
+
 /** `ledger_add` for one thread. The thread's name is read at call time, so a rename is honoured. */
 const ledgerAddTool = (threadName: () => string | undefined) =>
   defineTool({
@@ -978,7 +996,8 @@ const ledgerAddTool = (threadName: () => string | undefined) =>
       const root = deskRoot();
       const a = args as Record<string, unknown>;
       const slug = targetSlug(threadName, a.project);
-      const result = ledgerAdd(a as Line, { root, slug, name: a.name as string | undefined });
+      const line = { ...a, closes: closingTarget(a.closes) };
+      const result = ledgerAdd(line as Line, { root, slug, name: a.name as string | undefined });
       if (!result.ok) return { content: [{ type: "text" as const, text: `refused: ${result.reason}` }] };
       touchProject(api.conversationId, slug);
       deriveViews(root, slug);
